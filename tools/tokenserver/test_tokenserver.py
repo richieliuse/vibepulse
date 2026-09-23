@@ -39,6 +39,9 @@ def setUpModule():
     # does not exist unless a test says otherwise.
     tokenserver._claude_statusline_path_override = (
         Path(tempfile.gettempdir()) / "vibepulse-no-statusline-sample.json")
+    # Grok and Cursor probes would otherwise read this machine's logins
+    # and call their usage hosts during an unrelated snapshot test.
+    tokenserver._subscription_probes_enabled = False
 
 
 def tearDownModule():
@@ -2004,6 +2007,59 @@ class CodexLimitLogTests(unittest.TestCase):
             result["limit_name"] = name
         return result
 
+    def test_wham_usage_maps_onto_session_and_week(self):
+        body = tokenserver.codex_oauth.app_server_body({
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 15,
+                    "limit_window_seconds": 18000,
+                    "reset_at": 1_900_000_000,
+                },
+                "secondary_window": {
+                    "used_percent": 5,
+                    "limit_window_seconds": 604800,
+                    "reset_at": 1_900_100_000,
+                },
+            },
+            "additional_rate_limits": [{
+                "limit_name": "GPT-5.3-Codex-Spark",
+                "primary_window": {
+                    "used_percent": 90,
+                    "limit_window_seconds": 604800,
+                    "reset_at": 1_900_200_000,
+                },
+            }],
+        })
+        found = tokenserver._parse_codex_rate_limits_response(
+            body, observed_at=1_800_000_000, now_ts=1_800_000_000)
+        self.assertEqual(found["codexSessionPct"], 15.0)
+        self.assertEqual(found["codexSessionWindowMinutes"], 300)
+        self.assertEqual(found["codexWeekPct"], 5.0)
+        self.assertEqual(found["codexWeekWindowMinutes"], 10080)
+        self.assertNotIn("spark", json.dumps(found).lower())
+
+    def test_codex_upstream_interval_matches_the_claude_ladder(self):
+        previous = self._codex_probe_snapshot()
+        try:
+            self._reset_codex_probe()
+            tokenserver._codex_auth_state = "ready"
+            tokenserver._codex_failure_streak = 0
+            self.assertEqual(tokenserver._codex_probe_interval_s(),
+                             tokenserver.LIMITS_EVERY_S)
+            tokenserver._codex_failure_streak = 1
+            self.assertEqual(tokenserver._codex_probe_interval_s(),
+                             tokenserver.LIMITS_EVERY_S * 2)
+            tokenserver._codex_failure_streak = 8
+            self.assertEqual(tokenserver._codex_probe_interval_s(),
+                             tokenserver.LIMITS_EVERY_S * 4)
+            tokenserver._codex_auth_state = "missing"
+            self.assertEqual(tokenserver._codex_probe_interval_s(),
+                             tokenserver.AUTH_RECOVERY_EVERY_S)
+            self.assertEqual(tokenserver._codex_cli_interval_s(),
+                             tokenserver.LIMITS_EVERY_S)
+        finally:
+            self._restore_codex_probe(previous)
+
     def test_codex_window_value_preserves_used_percent(self):
         window = {
             "used_percent": 57.0,
@@ -2148,17 +2204,54 @@ class CodexLimitLogTests(unittest.TestCase):
         self.assertEqual(found["codexWeekResetAt"], 1_900_000_000)
         self.assertFalse(found["codexWeekStale"])
 
-    def test_refresh_prefers_live_app_server_over_stale_rollout(self):
-        previous = (
-            tokenserver._last_codex_limits,
-            tokenserver._last_codex_read,
-            tokenserver._codex_refreshing,
-        )
+    def _reset_codex_probe(self):
+        tokenserver._last_codex_limits = None
+        tokenserver._last_codex_read = 0.0
+        tokenserver._codex_refreshing = False
+        tokenserver._codex_failure_streak = 0
+        tokenserver._codex_cli_failure_streak = 0
+        tokenserver._codex_cooldown_until = 0.0
+        tokenserver._codex_auth_state = "unknown"
+        tokenserver._codex_status = "not_run"
+        tokenserver._codex_status_logged = None
+        tokenserver._last_codex_cli = 0.0
+        tokenserver._codex_probe_state_loaded = True
+        tokenserver._codex_dead_tokens.clear()
+
+    def test_refresh_prefers_oauth_over_cli(self):
+        previous = self._codex_probe_snapshot()
         try:
+            self._reset_codex_probe()
             tokenserver._codex_refreshing = True
             with mock.patch.object(
-                    tokenserver, "_read_codex_app_server_limits",
-                    return_value={"codexWeekPct": 62.0}) as app_server, \
+                    tokenserver, "_read_codex_oauth_limits",
+                    return_value=("ok", {"codexWeekPct": 12.0}, 0)), \
+                    mock.patch.object(
+                        tokenserver, "_read_codex_app_server_limits") as cli, \
+                    mock.patch.object(
+                        tokenserver, "_scan_codex_limits") as scan:
+                tokenserver._refresh_codex_limits()
+            cli.assert_not_called()
+            scan.assert_not_called()
+            self.assertEqual(tokenserver._last_codex_limits["codexWeekPct"],
+                             12.0)
+            self.assertEqual(tokenserver._codex_status, "usage_http_200 + ok")
+            self.assertEqual(tokenserver._codex_probe_interval_s(),
+                             tokenserver.LIMITS_EVERY_S)
+        finally:
+            self._restore_codex_probe(previous)
+
+    def test_refresh_uses_cli_when_oauth_credential_is_missing(self):
+        previous = self._codex_probe_snapshot()
+        try:
+            self._reset_codex_probe()
+            tokenserver._codex_refreshing = True
+            with mock.patch.object(
+                    tokenserver, "_read_codex_oauth_limits",
+                    return_value=("missing", {}, 0)), \
+                    mock.patch.object(
+                        tokenserver, "_read_codex_app_server_limits",
+                        return_value={"codexWeekPct": 62.0}) as app_server, \
                     mock.patch.object(
                         tokenserver, "_scan_codex_limits",
                         return_value={"codexWeekPct": 58.0}):
@@ -2170,10 +2263,87 @@ class CodexLimitLogTests(unittest.TestCase):
                 tokenserver.CODEX_APP_SERVER_TIMEOUT_S, 15)
             self.assertEqual(
                 tokenserver._last_codex_limits["codexWeekPct"], 62.0)
+            self.assertEqual(tokenserver._codex_status, "cli")
+            self.assertEqual(tokenserver._codex_probe_interval_s(),
+                             tokenserver.AUTH_RECOVERY_EVERY_S)
         finally:
-            (tokenserver._last_codex_limits,
-             tokenserver._last_codex_read,
-             tokenserver._codex_refreshing) = previous
+            self._restore_codex_probe(previous)
+
+    def test_oauth_429_does_not_call_cli_and_rests_ten_minutes(self):
+        previous = self._codex_probe_snapshot()
+        try:
+            self._reset_codex_probe()
+            tokenserver._last_codex_limits = {"codexWeekPct": 40.0}
+            tokenserver._codex_refreshing = True
+            with mock.patch.object(
+                    tokenserver, "_read_codex_oauth_limits",
+                    return_value=("rate_limited", {}, 0)), \
+                    mock.patch.object(
+                        tokenserver, "_save_codex_probe_state"), \
+                    mock.patch.object(
+                        tokenserver, "_read_codex_app_server_limits") as cli:
+                tokenserver._refresh_codex_limits()
+            cli.assert_not_called()
+            self.assertEqual(tokenserver._last_codex_limits, {})
+            self.assertGreaterEqual(
+                tokenserver._codex_cooldown_until - time.time(), 590)
+            self.assertIn("usage_http_429", tokenserver._codex_status)
+        finally:
+            self._restore_codex_probe(previous)
+
+    def test_missing_credential_recheck_does_not_spawn_cli_again(self):
+        previous = self._codex_probe_snapshot()
+        try:
+            self._reset_codex_probe()
+            tokenserver._codex_auth_state = "missing"
+            tokenserver._codex_status = "cli"
+            tokenserver._last_codex_limits = {"codexWeekPct": 62.0}
+            tokenserver._last_codex_cli = time.monotonic()
+            tokenserver._codex_refreshing = True
+            with mock.patch.object(
+                    tokenserver, "_read_codex_oauth_limits",
+                    return_value=("missing", {}, 0)), \
+                    mock.patch.object(
+                        tokenserver, "_read_codex_app_server_limits") as cli:
+                tokenserver._refresh_codex_limits()
+            cli.assert_not_called()
+            self.assertEqual(tokenserver._last_codex_limits["codexWeekPct"],
+                             62.0)
+            self.assertEqual(tokenserver._codex_status, "cli")
+        finally:
+            self._restore_codex_probe(previous)
+
+    def _codex_probe_snapshot(self):
+        return (
+            tokenserver._last_codex_limits,
+            tokenserver._last_codex_read,
+            tokenserver._codex_refreshing,
+            tokenserver._codex_failure_streak,
+            tokenserver._codex_cli_failure_streak,
+            tokenserver._codex_cooldown_until,
+            tokenserver._codex_auth_state,
+            tokenserver._codex_status,
+            tokenserver._codex_status_logged,
+            tokenserver._last_codex_cli,
+            tokenserver._codex_probe_state_loaded,
+            dict(tokenserver._codex_dead_tokens),
+        )
+
+    def _restore_codex_probe(self, previous):
+        (tokenserver._last_codex_limits,
+         tokenserver._last_codex_read,
+         tokenserver._codex_refreshing,
+         tokenserver._codex_failure_streak,
+         tokenserver._codex_cli_failure_streak,
+         tokenserver._codex_cooldown_until,
+         tokenserver._codex_auth_state,
+         tokenserver._codex_status,
+         tokenserver._codex_status_logged,
+         tokenserver._last_codex_cli,
+         tokenserver._codex_probe_state_loaded,
+         dead) = previous
+        tokenserver._codex_dead_tokens.clear()
+        tokenserver._codex_dead_tokens.update(dead)
 
     def test_latest_rate_limit_is_read_from_tail_without_read_text(self):
         rate_limits = self._limits(35.0)
@@ -2347,16 +2517,15 @@ class CodexLimitLogTests(unittest.TestCase):
             release.wait(timeout=1)
             return {"codexWeekPct": 49.0}
 
-        previous = (
-            tokenserver._last_codex_limits,
-            tokenserver._last_codex_read,
-            tokenserver._codex_refreshing,
-        )
+        previous = self._codex_probe_snapshot()
         try:
+            self._reset_codex_probe()
             tokenserver._last_codex_limits = {"codexWeekPct": 48.0}
             tokenserver._last_codex_read = 0.0
             tokenserver._codex_refreshing = False
             with mock.patch.object(
+                    tokenserver, "_read_codex_oauth_limits",
+                    return_value=("missing", {}, 0)), mock.patch.object(
                     tokenserver, "_read_codex_app_server_limits",
                     return_value={}), mock.patch.object(
                     tokenserver, "_scan_codex_limits",
@@ -2376,9 +2545,7 @@ class CodexLimitLogTests(unittest.TestCase):
                                  {"codexWeekPct": 49.0})
         finally:
             release.set()
-            (tokenserver._last_codex_limits,
-             tokenserver._last_codex_read,
-             tokenserver._codex_refreshing) = previous
+            self._restore_codex_probe(previous)
 
 
 class IncrementalUsageLogTests(unittest.TestCase):

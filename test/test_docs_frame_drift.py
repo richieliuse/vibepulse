@@ -108,6 +108,7 @@ PINNED = {
     "vibepulse-settings-about.png": "torget-settings-about-found.bmp",
     "vibepulse-settings-no-address.png": "torget-settings-menu-address-lost.bmp",
     "vibepulse-wifi-setup.png": "torget-wifi-setup-open.bmp",
+    "vibepulse-codex-week.png": "torget-vibepulse-codex-weekly.bmp",
 }
 
 # Frames whose chrome this guard cannot confirm is current, each frozen at
@@ -154,8 +155,6 @@ STALE_CHROME = {
         "f5e0f17b4d437b864c79e0674e17f35860699c9e7ff8465e28328873ddd4bc65",
     "vibepulse-codex-needs-you.png":
         "21ea74df103b943e2efc0443e8558bc4bd5751edafb84f4f49e124b28bc090b9",
-    "vibepulse-codex-week.png":
-        "91be52589635e467cad6dbc62266676e958c94e81d891dedb99ba9ff946080c4",
     "vibepulse-max-tracker-claude.png":
         "fc07fcd17951e668d6d6014878e65367f7c38e58a9393ba6a250732b389e3c84",
     "vibepulse-max-tracker.png":

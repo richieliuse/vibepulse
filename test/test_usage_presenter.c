@@ -68,10 +68,12 @@ int main(void) {
         strcmp(page.quota.reset_short_text, "4H 09M") == 0);
 
   usage_presenter_build_quota_page(&tokens, USAGE_QUOTA_CODEX_WEEK, &page);
-  check("Codex page stays consumed usage",
+  check("Codex page shows remaining quota",
         page.provider == USAGE_PROVIDER_CODEX &&
         strcmp(page.quota.label, "WEEKLY") == 0 &&
-        strcmp(page.quota.pct_text, "57%") == 0 &&
+        strcmp(page.quota.pct_text, "43%") == 0 &&
+        page.quota.meter_remaining &&
+        strcmp(page.quota.delta_text, "+5%") == 0 &&
         strcmp(page.quota.reset_short_text, "1D 12H") == 0);
 
   /* The countdown fold-in. Without a forecast the right-hand stat is the
@@ -91,8 +93,8 @@ int main(void) {
         strcmp(page.countdown_text, "1D 3H") == 0 &&
         strcmp(page.countdown_caption, "TO EMPTY") == 0 &&
         page.counts_to_empty);
-  check("the percentage above the countdown is untouched",
-        strcmp(page.quota.pct_text, "57%") == 0 &&
+  check("the percentage above the countdown is the remainder",
+        strcmp(page.quota.pct_text, "43%") == 0 &&
         strcmp(page.quota.reset_short_text, "1D 12H") == 0);
 
   /* The service forecasts the weekly windows only. Lending that deadline to
@@ -392,6 +394,37 @@ int main(void) {
 
   check("no state ever claims the money was earned",
         strstr(value_page.verdict, "EARNED") == NULL);
+
+  tokens.grok_credit = limit(64, 5000, 0);
+  tokens.grok_credit.has_delta = 0;
+  snprintf(tokens.grok_quota_label, sizeof tokens.grok_quota_label, "WEEKLY");
+  tokens.has_grok_quota_label = 1;
+  usage_presenter_build_quota_page(&tokens, USAGE_QUOTA_GROK, &page);
+  check("grok page shows remaining credits",
+        page.provider == USAGE_PROVIDER_GROK &&
+        strcmp(page.quota.label, "WEEKLY") == 0 &&
+        strcmp(page.quota.pct_text, "36%") == 0 &&
+        page.quota.meter_remaining &&
+        !page.counts_to_empty);
+
+  tokens.cursor_total = limit(12, 10000, 0);
+  tokens.cursor_total.has_delta = 0;
+  tokens.cursor_models = limit(4, 10000, 0);
+  tokens.cursor_models.has_delta = 0;
+  tokens.cursor_third = limit(80, 10000, 0);
+  tokens.cursor_third.has_delta = 0;
+  usage_cursor_page_view cursor = {0};
+  usage_presenter_build_cursor_page(&tokens, &cursor);
+  check("cursor keeps four lanes and leaves an unknown one dashed",
+        strcmp(cursor.lanes[0].label, "TOTAL") == 0 &&
+        strcmp(cursor.lanes[0].pct_text, "88%") == 0 &&
+        cursor.lanes[0].meter_remaining &&
+        strcmp(cursor.lanes[1].label, "CURSOR") == 0 &&
+        strcmp(cursor.lanes[1].pct_text, "96%") == 0 &&
+        strcmp(cursor.lanes[2].label, "THIRD PARTY") == 0 &&
+        strcmp(cursor.lanes[2].pct_text, "20%") == 0 &&
+        strcmp(cursor.lanes[3].label, "GROK BOT") == 0 &&
+        strcmp(cursor.lanes[3].pct_text, "–") == 0);
 
   if (failures == 0) {
     printf("OK: all usage presenter tests pass\n");

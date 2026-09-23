@@ -73,6 +73,22 @@ def worst_case_payload() -> dict:
         "claudeWeekStale": False,
         "claudeModelWeekStale": False,
         "codexWeekStale": False,
+        "grokCreditPct": 100.0,
+        "grokCreditResetMin": 999_999,
+        "grokCreditStale": False,
+        "grokQuotaLabel": "MONTHLY",
+        "cursorTotalPct": 100.0,
+        "cursorTotalResetMin": 999_999,
+        "cursorTotalStale": False,
+        "cursorModelsPct": 100.0,
+        "cursorModelsResetMin": 999_999,
+        "cursorModelsStale": False,
+        "cursorThirdPct": 100.0,
+        "cursorThirdResetMin": 999_999,
+        "cursorThirdStale": False,
+        "cursorBotPct": 100.0,
+        "cursorBotResetMin": 999_999,
+        "cursorBotStale": False,
     }
     for prefix in ("claude", "codex"):
         payload[f"{prefix}ForecastState"] = "unavailable"

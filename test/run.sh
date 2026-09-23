@@ -372,6 +372,7 @@ cc -std=c11 -Wall -Wextra -Werror -O1 \
 cd ..
 "$PYTHON_BIN" -m unittest tools.agent_assets.test_build_agent_images -v
 "$PYTHON_BIN" -m unittest tools.wifi_status_assets.test_build_wifi_status_assets -v
+"$PYTHON_BIN" -m unittest tools.provider_icons.test_build_provider_icons -v
 "$PYTHON_BIN" -m unittest tools.vibepulse_studio.test_design \
   tools.vibepulse_studio.test_server -v
 "$PYTHON_BIN" tools/vibepulse_studio/design.py --check

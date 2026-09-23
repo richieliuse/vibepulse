@@ -53,6 +53,7 @@ const char *tk_labs_name(int feature) {
   return valid(feature) ? names[feature] : "";
 }
 static bool view_enabled(int view) {
+  if (view == VIEW_GROK_WEEKLY || view == VIEW_CURSOR) return true;
   if (view >= 0 && view <= VIEW_CODEX_WEEKLY) return true;
   switch (view) {
     case VIEW_BURN_RATE: return tk_labs_active(TK_LABS_BURN_RATE);

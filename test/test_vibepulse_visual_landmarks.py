@@ -64,9 +64,10 @@ WIFI_OPEN_QR_SIZE = 196
 
 
 def _screen_views():
-    # Standard fixture runs opt in to all five LABS. Runtime subsets are tested
-    # by test_labs_features and the real LVGL --vibepulse-labs-qa mode.
-    return 8
+    # Standard fixture runs opt in to all five LABS, plus the always-on Grok
+    # page and the Cursor quad. Runtime subsets are tested by
+    # test_labs_features and the real LVGL --vibepulse-labs-qa mode.
+    return 10
 
 
 SCREEN_VIEWS = _screen_views()
@@ -156,6 +157,12 @@ EXPECTED = {
     "torget-vibepulse-claude-stale.bmp",
     "torget-vibepulse-claude-missing.bmp",
     "torget-vibepulse-codex-missing.bmp",
+    "torget-vibepulse-grok-weekly.bmp",
+    "torget-vibepulse-grok-weekly-stale.bmp",
+    "torget-vibepulse-grok-no-data.bmp",
+    "torget-vibepulse-cursor-quad.bmp",
+    "torget-vibepulse-cursor-stale.bmp",
+    "torget-vibepulse-cursor-no-data.bmp",
     "torget-vibepulse-claude-single-working.bmp",
     "torget-vibepulse-claude-lease-expired.bmp",
     "torget-vibepulse-claude-multi-chat.bmp",
@@ -846,8 +853,6 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
              (217, 119, 87), 287),
             ("torget-vibepulse-claude-all.bmp", (138, 79, 66),
              (217, 119, 87), 191),
-            ("torget-vibepulse-codex-weekly.bmp", (69, 75, 138),
-             (111, 120, 255), 152),
         )
         for name, baseline, accent, marker_start in cases:
             with self.subTest(name=name):
@@ -871,6 +876,32 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
                         image.getpixel((marker_start + 1, y)),
                         (255, 255, 255),
                     )
+
+    def test_codex_meter_is_remaining_and_grok_bar_is_icon_silver(self):
+        # tokens.json stores 35% used. The page shows the other 65%.
+        image = self.image("torget-vibepulse-codex-weekly.bmp")
+        y = BAR_SOLID_CENTER_Y
+        safe = layout_token("VP_SAFE_X")
+        width = layout_token("VP_CONTENT_W")
+        fill = int(65 * width / 100 + 0.5)
+        accent = (111, 120, 255)
+        track = (48, 50, 56)
+        self.assertEqual(image.getpixel((safe, y)), accent)
+        self.assertEqual(image.getpixel((safe + fill - 1, y)), accent)
+        self.assertEqual(image.getpixel((safe + fill, y)), track)
+        self.assertNotIn((69, 75, 138),
+                         [image.getpixel((x, y)) for x in range(safe, safe + width)])
+
+        # Fixture is 64% used, so the page shows 36% left in the mark's
+        # bright silver. Today's burn stays in the caption, not the bar.
+        grok = self.image("torget-vibepulse-grok-weekly.bmp")
+        grok_fill = int(36 * width / 100 + 0.5)
+        silver = (221, 221, 221)
+        self.assertEqual(grok.getpixel((safe, y)), silver)
+        self.assertEqual(grok.getpixel((safe + grok_fill - 1, y)), silver)
+        self.assertEqual(grok.getpixel((safe + grok_fill, y)), track)
+        self.assertNotIn((159, 159, 159),
+                         [grok.getpixel((x, y)) for x in range(safe, safe + width)])
 
     def test_corrected_quota_provenance_fixtures_are_visually_distinct(self):
         live = self.image("torget-vibepulse-codex-weekly-live-46.bmp")
@@ -1088,8 +1119,8 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
         ]
         self.assertEqual(zero_row[:3], [(255, 255, 255)] * 3)
         self.assertEqual(zero_row[3:], [(48, 50, 56)] * 433)
-        self.assertEqual(full_row[-3:], [(255, 255, 255)] * 3)
-        self.assertIn((69, 75, 138), full_row[:-3])
+        # 100% used is an empty remaining meter: no baseline and no marker.
+        self.assertEqual(set(full_row), {(48, 50, 56)})
 
     def test_attention_outline_is_six_pixels_at_exact_inset_and_color(self):
         cases = (
@@ -1327,14 +1358,12 @@ class VibePulseVisualLandmarkTests(unittest.TestCase):
                                     MAX_RED)
 
     def test_pager_shows_one_dot_per_view(self):
-        # The simulator opts into GitHub, so the layout is the full eight
-        # tiles (six base + github + value) and create_pager draws one dot
-        # per view, the active one 18px wide and the rest 6px, all on one
-        # pixel row with nothing else sharing it — so counting horizontal
-        # runs of non-black pixels on that row is an exact dot count and
-        # pattern. The expected count is read from the header rather than
-        # written here, so adding a view updates this test's expectation but
-        # never lets the row silently go uncounted.
+        # The simulator opts into GitHub, so the layout is the full ten
+        # tiles (Claude, Claude all, Codex, burn, two trackers, GitHub,
+        # Value, Grok, Cursor) and create_pager draws one dot per view, the
+        # active one 18px wide and the rest 6px, all on one pixel row with
+        # nothing else sharing it — so counting horizontal runs of
+        # non-black pixels on that row is an exact dot count and pattern.
         cases = (
             ("torget-vibepulse-tracker-claude-coldstart.bmp", 4),  # VIEW_TRACKER_CLAUDE
             ("torget-vibepulse-tracker-codex-full.bmp", 5),        # VIEW_TRACKER_CODEX

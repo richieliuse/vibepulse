@@ -84,18 +84,21 @@ assert "if (app.stale)" not in tokens_apply, \
 
 create = source[source.index("void usage_screen_create"):]
 create = create[:create.index("void usage_screen_apply_tokens")]
-assert create.count("create_quota_page(") == 3
+assert create.count("create_quota_page(") == 4
+assert "create_cursor_page();" in create
 assert create.count("create_burn_rate_page(") == 1
 assert create.count("create_tracker_page(") == 2
 assert "create_github_page();" in create
 assert create.count("create_value_page(") == 1
+assert create.index("create_value_page(") < create.index("VIEW_GROK_WEEKLY")
+assert create.index("VIEW_GROK_WEEKLY") < create.index("create_cursor_page();")
 assert create.index("tk_project_star_popup_create(root);") < create.index(
     "tk_agent_monitor_create(root);"
 )
 assert "tk_agent_monitor_create(root);" in create
 
 quota = source[source.index("static void create_quota_page"):]
-quota = quota[:quota.index("static void create_burn_rate_page")]
+quota = quota[:quota.index("static void create_cursor_lane")]
 for copy in ("USED TODAY", "TO RESET"):
     assert f'"{copy}"' in quota
 assert "VP_BAR_Y" in quota and "VP_BAR_H" in quota
@@ -380,4 +383,4 @@ for anchor in (31, 246, 321, 365, 430):
 assert "int usage_screen_current_view(void);" in header
 assert "usage_screen_current_view()" in sim
 
-print("OK: VibePulse eight-page full-screen layout wiring (github + value)")
+print("OK: VibePulse full-screen layout wiring (github + value + grok + cursor)")

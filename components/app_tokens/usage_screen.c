@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "agent_assets.h"
+#include "provider_icons.h"
 #include "agent_monitor.h"
 #include "app_tokens.h"
 #include "app_tokens_config.h"
@@ -21,6 +22,7 @@
 #include "vibepulse_layout.generated.h"
 
 extern const lv_font_t plex_num_164;
+extern const lv_font_t plex_num_82;
 extern const lv_font_t plex_num_118;
 extern const lv_font_t plex_num_84;
 extern const lv_font_t plex_money_118;
@@ -48,6 +50,19 @@ extern const lv_font_t plex_text_17;
 #define COL_STAR      lv_color_hex(TK_PROJECT_STAR_COLOR_HEX)
 #define COL_CLAUDE_MUTED lv_color_hex(0x8A4F42)
 #define COL_CODEX_MUTED  lv_color_hex(0x454B8A)
+/* Official marks are monochrome. Grok's light is the sampled #F8F8F8
+ * slash; Cursor's #E0E0E0 / #909090 are the lit and mid faces of the
+ * apple-touch cube. Neither brand publishes a chromatic accent. */
+#define COL_GROK         lv_color_hex(0xF8F8F8)
+#define COL_GROK_MUTED   lv_color_hex(0x808080)
+/* Bar silvers sampled from the official Grok mark (grok-mark.png):
+ * #DDDDDD is the bright face, #9F9F9F the mid silver. */
+#define COL_GROK_BAR       lv_color_hex(0xDDDDDD)
+#define COL_GROK_BAR_MUTED lv_color_hex(0x9F9F9F)
+#define COL_CURSOR       lv_color_hex(0xE0E0E0)
+#define COL_CURSOR_MUTED lv_color_hex(0x909090)
+#define TK_QUOTA_PAGES 4
+#define CUR_CELL 240
 #define COL_DOT       lv_color_hex(0x41444A)
 #define COL_DOT_ON    lv_color_hex(0xCDD2DA)
 
@@ -109,6 +124,29 @@ typedef struct {
   bool quota_stale;
 } quota_page;
 
+/* One Codex quota page, scaled by 1/2 into a 240 px cell. */
+typedef struct {
+  lv_obj_t *quota;
+  lv_obj_t *percent;
+  lv_obj_t *track;
+  lv_obj_t *baseline_fill;
+  lv_obj_t *today_fill;
+  lv_obj_t *marker;
+  lv_obj_t *today;
+  lv_obj_t *reset;
+  lv_obj_t *context;
+  char rendered_context[64];
+  bool context_initialized;
+  bool has_data;
+  bool quota_stale;
+  int origin_x;
+} cursor_lane;
+
+typedef struct {
+  lv_obj_t *tile;
+  cursor_lane lanes[4];
+} cursor_page;
+
 typedef struct {
   lv_obj_t *root;
   lv_obj_t *label;
@@ -160,7 +198,8 @@ typedef struct {
 static struct {
   lv_obj_t *tileview;
   lv_obj_t *tiles[TK_USAGE_SCREEN_VIEWS];
-  quota_page quotas[3];
+  quota_page quotas[TK_QUOTA_PAGES];
+  cursor_page cursor;
   forecast_row forecast_rows[2];
   tracker_page trackers[2];
   github_page github;
@@ -249,18 +288,57 @@ static void create_header_hairline(lv_obj_t *parent) {
   create_hairline_span(parent, HEADER_LINE_Y, 408 - VP_SAFE_X);
 }
 
+static lv_color_t provider_accent(usage_provider provider) {
+  switch (provider) {
+    case USAGE_PROVIDER_CLAUDE: return COL_CLAUDE;
+    case USAGE_PROVIDER_CODEX: return COL_CODEX;
+    case USAGE_PROVIDER_GROK: return COL_GROK;
+    case USAGE_PROVIDER_CURSOR: return COL_CURSOR;
+  }
+  return COL_WHITE;
+}
+
+static lv_color_t provider_muted(usage_provider provider) {
+  switch (provider) {
+    case USAGE_PROVIDER_CLAUDE: return COL_CLAUDE_MUTED;
+    case USAGE_PROVIDER_CODEX: return COL_CODEX_MUTED;
+    case USAGE_PROVIDER_GROK: return COL_GROK_MUTED;
+    case USAGE_PROVIDER_CURSOR: return COL_CURSOR_MUTED;
+  }
+  return COL_TRACK;
+}
+
+static const char *provider_title(usage_provider provider) {
+  switch (provider) {
+    case USAGE_PROVIDER_CODEX: return "CODEX";
+    case USAGE_PROVIDER_GROK: return "GROK";
+    case USAGE_PROVIDER_CURSOR: return "CURSOR";
+    case USAGE_PROVIDER_CLAUDE:
+    default: return "CLAUDE";
+  }
+}
+
+static void create_mark(lv_obj_t *parent, const lv_image_dsc_t *src,
+                        int x, int y) {
+  lv_obj_t *image = lv_image_create(parent);
+  lv_image_set_src(image, src);
+  lv_obj_remove_flag(image, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_pos(image, x, y);
+}
+
 static void create_provider_identity(lv_obj_t *tile,
                                      usage_provider provider) {
   if (provider == USAGE_PROVIDER_CLAUDE)
     create_claude_icon(tile, VP_SAFE_X, VP_PROVIDER_Y - 2);
+  else if (provider == USAGE_PROVIDER_GROK)
+    create_mark(tile, &tk_img_grok_32, VP_SAFE_X, VP_PROVIDER_Y - 2);
   else
     create_codex_icon(tile, VP_SAFE_X, VP_PROVIDER_Y - 2);
 
   lv_obj_t *provider_name = label(tile, &plex_ui_21, COL_WHITE,
                                   64, VP_PROVIDER_Y + 1, 180, 30);
   lv_obj_set_style_text_letter_space(provider_name, 2, 0);
-  lv_label_set_text(provider_name,
-                    provider == USAGE_PROVIDER_CLAUDE ? "CLAUDE" : "CODEX");
+  lv_label_set_text(provider_name, provider_title(provider));
 }
 
 /* Delad huvudkonstruktion: providerikon + namn, halo (dold tills en aktiv
@@ -276,8 +354,7 @@ static void create_live_header_widgets(lv_obj_t *tile, usage_provider provider,
   lv_obj_set_style_radius(halo, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_border_width(halo, 2, 0);
   lv_obj_set_style_border_opa(halo, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_color(
-      halo, provider == USAGE_PROVIDER_CLAUDE ? COL_CLAUDE : COL_CODEX, 0);
+  lv_obj_set_style_border_color(halo, provider_accent(provider), 0);
   lv_obj_add_flag(halo, LV_OBJ_FLAG_HIDDEN);
 
   create_provider_identity(tile, provider);
@@ -505,18 +582,19 @@ static void create_quota_page(quota_page *page, int index,
   lv_obj_set_pos(page->baseline_fill, 0, 0);
   lv_obj_set_size(page->baseline_fill, 0, VP_BAR_H);
   lv_obj_set_style_bg_opa(page->baseline_fill, LV_OPA_COVER, 0);
-  lv_obj_set_style_bg_color(
-      page->baseline_fill,
-      provider == USAGE_PROVIDER_CLAUDE ? COL_CLAUDE_MUTED : COL_CODEX_MUTED,
-      0);
+  lv_obj_set_style_bg_color(page->baseline_fill,
+                            provider == USAGE_PROVIDER_GROK
+                                ? COL_GROK_BAR_MUTED
+                                : provider_muted(provider), 0);
 
   page->today_fill = bare(page->track);
   lv_obj_set_pos(page->today_fill, 0, 0);
   lv_obj_set_size(page->today_fill, 0, VP_BAR_H);
   lv_obj_set_style_bg_opa(page->today_fill, LV_OPA_COVER, 0);
-  lv_obj_set_style_bg_color(
-      page->today_fill,
-      provider == USAGE_PROVIDER_CLAUDE ? COL_CLAUDE : COL_CODEX, 0);
+  lv_obj_set_style_bg_color(page->today_fill,
+                            provider == USAGE_PROVIDER_GROK
+                                ? COL_GROK_BAR
+                                : provider_accent(provider), 0);
 
   page->marker = bare(page->tile);
   lv_obj_set_pos(page->marker, VP_SAFE_X, VP_BAR_Y - 4);
@@ -526,13 +604,117 @@ static void create_quota_page(quota_page *page, int index,
   lv_obj_add_flag(page->marker, LV_OBJ_FLAG_HIDDEN);
 
   create_stat(page->tile, &page->today, NULL, VP_SAFE_X, 210, false,
-              provider == USAGE_PROVIDER_CLAUDE ? COL_CLAUDE : COL_CODEX,
-              "USED TODAY");
+              provider_accent(provider), "USED TODAY");
   create_stat(page->tile, &page->reset, &page->reset_caption,
               RIGHT_STAT_X, RIGHT_STAT_W, true, COL_WHITE, "TO RESET");
   lv_label_set_text(page->today, "–");
   lv_label_set_text(page->reset, "–");
   create_pager(page->tile, index);
+}
+
+/* Cursor is four Codex quota pages, each at half size, in a 2x2 grid.
+ * One page pager sits below the grid. Coordinates are integer halves of
+ * the Codex tokens so the cells stay the same layout, not a new one. */
+static void create_cursor_lane(cursor_lane *lane, lv_obj_t *tile,
+                               int column, int row) {
+  const int ox = column * CUR_CELL;
+  const int oy = row * CUR_CELL;
+  const int safe = VP_SAFE_X / 2;
+  const int content = VP_CONTENT_W / 2;
+  lane->origin_x = ox + safe;
+
+  create_mark(tile, &tk_img_cursor_16, ox + safe, oy + (VP_PROVIDER_Y - 2) / 2);
+  lv_obj_t *name = label(tile, &plex_ui_12, COL_WHITE,
+                         ox + 32, oy + (VP_PROVIDER_Y + 1) / 2, 56, 16);
+  lv_obj_set_style_text_letter_space(name, 1, 0);
+  lv_label_set_text(name, "CURSOR");
+
+  lane->context = label(tile, &plex_ui_12, COL_META,
+                        ox + 100, oy + (VP_PROVIDER_Y + 5) / 2, 118, 14);
+  lv_obj_set_style_text_align(lane->context, LV_TEXT_ALIGN_RIGHT, 0);
+  lv_obj_set_style_text_letter_space(lane->context, 1, 0);
+
+  lv_obj_t *hair = bare(tile);
+  lv_obj_set_pos(hair, ox + safe, oy + HEADER_LINE_Y / 2);
+  lv_obj_set_size(hair, content, 1);
+  lv_obj_set_style_bg_opa(hair, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(hair, COL_HAIRLINE, 0);
+
+  lane->quota = label(tile, &plex_ui_12, COL_LABEL,
+                      ox + safe, oy + VP_QUOTA_Y / 2, content, 16);
+  lv_obj_set_style_text_letter_space(lane->quota, 1, 0);
+
+  lane->percent = label(tile, &plex_num_82, COL_WHITE,
+                        ox + 8, oy + VP_PERCENT_Y / 2, 224, 64);
+  lv_obj_set_style_text_letter_space(lane->percent, -4, 0);
+  lv_label_set_text(lane->percent, "–");
+
+  lane->track = bare(tile);
+  lv_obj_set_pos(lane->track, ox + safe, oy + VP_BAR_Y / 2);
+  lv_obj_set_size(lane->track, content, VP_BAR_H / 2);
+  lv_obj_set_style_bg_opa(lane->track, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(lane->track, COL_TRACK, 0);
+  lv_obj_set_style_radius(lane->track, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_clip_corner(lane->track, true, 0);
+
+  lane->baseline_fill = bare(lane->track);
+  lv_obj_set_pos(lane->baseline_fill, 0, 0);
+  lv_obj_set_size(lane->baseline_fill, 0, VP_BAR_H / 2);
+  lv_obj_set_style_bg_opa(lane->baseline_fill, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(lane->baseline_fill, COL_CURSOR_MUTED, 0);
+
+  lane->today_fill = bare(lane->track);
+  lv_obj_set_pos(lane->today_fill, 0, 0);
+  lv_obj_set_size(lane->today_fill, 0, VP_BAR_H / 2);
+  lv_obj_set_style_bg_opa(lane->today_fill, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(lane->today_fill, COL_CURSOR, 0);
+
+  lane->marker = bare(tile);
+  lv_obj_set_pos(lane->marker, ox + safe, oy + (VP_BAR_Y - 4) / 2);
+  lv_obj_set_size(lane->marker, 2, (VP_BAR_H + 8) / 2);
+  lv_obj_set_style_bg_opa(lane->marker, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(lane->marker, COL_WHITE, 0);
+  lv_obj_add_flag(lane->marker, LV_OBJ_FLAG_HIDDEN);
+
+  lane->today = label(tile, &plex_ui_16, COL_CURSOR,
+                      ox + safe, oy + VP_RESET_Y / 2, 105, 20);
+  lane->reset = label(tile, &plex_ui_16, COL_WHITE,
+                      ox + RIGHT_STAT_X / 2, oy + VP_RESET_Y / 2, 109, 20);
+  lv_obj_set_style_text_align(lane->reset, LV_TEXT_ALIGN_RIGHT, 0);
+  lv_label_set_text(lane->today, "–");
+  lv_label_set_text(lane->reset, "–");
+
+  lv_obj_t *today_cap = label(tile, &plex_ui_12, COL_MUTED,
+                              ox + safe, oy + STAT_LABEL_Y / 2, 105, 14);
+  lv_obj_t *reset_cap = label(tile, &plex_ui_12, COL_MUTED,
+                              ox + RIGHT_STAT_X / 2, oy + STAT_LABEL_Y / 2,
+                              109, 14);
+  lv_obj_set_style_text_align(reset_cap, LV_TEXT_ALIGN_RIGHT, 0);
+  lv_obj_set_style_text_letter_space(today_cap, 1, 0);
+  lv_obj_set_style_text_letter_space(reset_cap, 1, 0);
+  lv_label_set_text(today_cap, "USED TODAY");
+  lv_label_set_text(reset_cap, "TO RESET");
+}
+
+static void create_cursor_page(void) {
+  cursor_page *page = &ui.cursor;
+  memset(page, 0, sizeof *page);
+  page->tile = new_tile(VIEW_CURSOR);
+  lv_obj_t *vertical = bare(page->tile);
+  lv_obj_set_pos(vertical, CUR_CELL - 1, 0);
+  lv_obj_set_size(vertical, 1, PAGER_Y - 8);
+  lv_obj_set_style_bg_opa(vertical, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(vertical, COL_HAIRLINE, 0);
+  lv_obj_t *horizontal = bare(page->tile);
+  lv_obj_set_pos(horizontal, 0, CUR_CELL - 1);
+  lv_obj_set_size(horizontal, VP_SCREEN_W, 1);
+  lv_obj_set_style_bg_opa(horizontal, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(horizontal, COL_HAIRLINE, 0);
+  create_cursor_lane(&page->lanes[0], page->tile, 0, 0);
+  create_cursor_lane(&page->lanes[1], page->tile, 1, 0);
+  create_cursor_lane(&page->lanes[2], page->tile, 0, 1);
+  create_cursor_lane(&page->lanes[3], page->tile, 1, 1);
+  create_pager(page->tile, VIEW_CURSOR);
 }
 
 static void create_forecast_row(lv_obj_t *tile, forecast_row *row,
@@ -736,8 +918,9 @@ static uint64_t agent_packet_age_ms(int64_t now_us) {
 
 static const tk_agent_provider_status *agent_provider_for(
     usage_provider provider) {
-  return provider == USAGE_PROVIDER_CLAUDE ? &ui.agent_snapshot.claude
-                                           : &ui.agent_snapshot.codex;
+  if (provider == USAGE_PROVIDER_CLAUDE) return &ui.agent_snapshot.claude;
+  if (provider == USAGE_PROVIDER_CODEX) return &ui.agent_snapshot.codex;
+  return NULL;
 }
 
 /* Delad uppdateringskärna: samma liveheader-logik (halo + statustext) för
@@ -794,8 +977,8 @@ static bool apply_today_bar(quota_page *page,
                             const usage_card_view *quota) {
   usage_today_bar_view bar = {0};
   bool available = usage_live_build_today_bar(
-      quota->pct, quota->has_pct, quota->delta_pct, quota->has_delta,
-      VP_CONTENT_W, &bar);
+      quota->pct, quota->has_pct, quota->delta_pct,
+      quota->has_delta && !quota->meter_remaining, VP_CONTENT_W, &bar);
 
   if (!available) {
     lv_obj_add_flag(page->baseline_fill, LV_OBJ_FLAG_HIDDEN);
@@ -843,6 +1026,68 @@ static void apply_quota(quota_page *page, const tk_tokens *tokens) {
   lv_label_set_text(page->reset, view.countdown_text);
   lv_label_set_text(page->reset_caption, view.countdown_caption);
   refresh_header(page, ui.last_now_us);
+}
+
+static void apply_cursor_lane(cursor_lane *lane, const usage_card_view *card) {
+  usage_today_bar_view bar = {0};
+  const int track = VP_CONTENT_W / 2;
+  bool available = usage_live_build_today_bar(
+      card->pct, card->has_pct, card->delta_pct,
+      card->has_delta && !card->meter_remaining, track, &bar);
+  lane->has_data = card->has_pct;
+  lane->quota_stale = card->stale;
+  lv_label_set_text(lane->quota, card->label);
+  lv_label_set_text(lane->percent, card->pct_text);
+
+  if (!available) {
+    lv_obj_add_flag(lane->baseline_fill, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(lane->today_fill, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_remove_flag(lane->baseline_fill, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(lane->today_fill, LV_OBJ_FLAG_HIDDEN);
+  }
+  lv_obj_set_width(lane->baseline_fill,
+                   available && bar.has_today ? bar.baseline_px : 0);
+  lv_obj_set_x(lane->today_fill, available && bar.has_today ? bar.baseline_px : 0);
+  lv_obj_set_width(lane->today_fill,
+                   !available ? 0 : bar.has_today ? bar.today_px : bar.total_px);
+  if (!available || !bar.has_today) {
+    lv_obj_add_flag(lane->marker, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    int marker_x = lane->origin_x + bar.marker_x - 1;
+    if (marker_x < lane->origin_x) marker_x = lane->origin_x;
+    if (marker_x > lane->origin_x + track - 2)
+      marker_x = lane->origin_x + track - 2;
+    lv_obj_set_x(lane->marker, marker_x);
+    lv_obj_remove_flag(lane->marker, LV_OBJ_FLAG_HIDDEN);
+  }
+  lv_label_set_text(lane->today,
+                    card->has_delta && available ? card->delta_text : "–");
+  lv_label_set_text(lane->reset,
+                    card->reset_short_text[0] ? card->reset_short_text : "–");
+}
+
+static void refresh_cursor_lane(cursor_lane *lane) {
+  if (!lane->context) return;
+  bool stale = ui.stale || lane->quota_stale;
+  const char *text = usage_presenter_quota_status_text(
+      lane->has_data, stale, NULL);
+  if (!lane->context_initialized ||
+      strcmp(lane->rendered_context, text) != 0) {
+    lv_label_set_text(lane->context, text);
+    snprintf(lane->rendered_context, sizeof lane->rendered_context, "%s", text);
+    lane->context_initialized = true;
+  }
+}
+
+static void apply_cursor(const tk_tokens *tokens) {
+  if (!ui.cursor.tile) return;
+  usage_cursor_page_view view = {0};
+  usage_presenter_build_cursor_page(tokens, &view);
+  for (int i = 0; i < 4; i++) {
+    apply_cursor_lane(&ui.cursor.lanes[i], &view.lanes[i]);
+    refresh_cursor_lane(&ui.cursor.lanes[i]);
+  }
 }
 
 static void apply_forecast_row(forecast_row *widgets,
@@ -1031,6 +1276,9 @@ void usage_screen_create(lv_obj_t *root) {
   }
   if (tk_labs_active(TK_LABS_GITHUB)) create_github_page();
   if (tk_labs_active(TK_LABS_VALUE)) create_value_page();
+  create_quota_page(&ui.quotas[3], VIEW_GROK_WEEKLY,
+                    USAGE_QUOTA_GROK, USAGE_PROVIDER_GROK);
+  create_cursor_page();
   if (tk_labs_active(TK_LABS_STAR_POPUP)) {
     /* Created before the agent monitor: NEEDS YOU/ERROR/DONE always retain
      * transient priority over a project star. */
@@ -1066,7 +1314,8 @@ void usage_screen_apply_tokens(const tk_tokens *tokens) {
     merged.value.state = TK_VALUE_UNAVAILABLE;
   }
   ui.last_tokens = merged;
-  for (int i = 0; i < 3; i++) apply_quota(&ui.quotas[i], &merged);
+  for (int i = 0; i < TK_QUOTA_PAGES; i++) apply_quota(&ui.quotas[i], &merged);
+  apply_cursor(&merged);
   if (tk_labs_active(TK_LABS_BURN_RATE)) {
     usage_forecast_page_view forecasts = {0};
     usage_presenter_build_forecasts(&merged, &forecasts);
@@ -1109,7 +1358,8 @@ void usage_screen_apply_agent(const tk_agent_snapshot *snapshot,
   ui.agent_applied_at_us = now_us;
   ui.last_now_us = now_us;
   ui.has_agent_snapshot = true;
-  for (int i = 0; i < 3; i++) refresh_header(&ui.quotas[i], now_us);
+  for (int i = 0; i < TK_QUOTA_PAGES; i++) refresh_header(&ui.quotas[i], now_us);
+  for (int i = 0; i < 4; i++) refresh_cursor_lane(&ui.cursor.lanes[i]);
   for (int i = 0; i < 2; i++) refresh_tracker_header(&ui.trackers[i], now_us);
   tk_agent_monitor_apply(snapshot, now_us);
 }
@@ -1123,14 +1373,16 @@ void usage_screen_apply_agent_status_relay(
   ui.agent_applied_at_us = now_us;
   ui.last_now_us = now_us;
   ui.has_agent_snapshot = true;
-  for (int i = 0; i < 3; i++) refresh_header(&ui.quotas[i], now_us);
+  for (int i = 0; i < TK_QUOTA_PAGES; i++) refresh_header(&ui.quotas[i], now_us);
+  for (int i = 0; i < 4; i++) refresh_cursor_lane(&ui.cursor.lanes[i]);
   for (int i = 0; i < 2; i++) refresh_tracker_header(&ui.trackers[i], now_us);
   tk_agent_monitor_apply_status_relay(snapshot, now_us);
 }
 
 void usage_screen_tick(int64_t now_us) {
   ui.last_now_us = now_us;
-  for (int i = 0; i < 3; i++) refresh_header(&ui.quotas[i], now_us);
+  for (int i = 0; i < TK_QUOTA_PAGES; i++) refresh_header(&ui.quotas[i], now_us);
+  for (int i = 0; i < 4; i++) refresh_cursor_lane(&ui.cursor.lanes[i]);
   for (int i = 0; i < 2; i++) refresh_tracker_header(&ui.trackers[i], now_us);
   tk_agent_monitor_tick(now_us);
   if (tk_labs_active(TK_LABS_STAR_POPUP)) tk_project_star_popup_tick(now_us);
@@ -1138,8 +1390,9 @@ void usage_screen_tick(int64_t now_us) {
 
 void usage_screen_set_stale(bool stale) {
   ui.stale = stale;
-  for (int i = 0; i < 3; i++)
+  for (int i = 0; i < TK_QUOTA_PAGES; i++)
     refresh_header(&ui.quotas[i], ui.last_now_us);
+  for (int i = 0; i < 4; i++) refresh_cursor_lane(&ui.cursor.lanes[i]);
   for (int i = 0; i < 2; i++)
     refresh_tracker_header(&ui.trackers[i], ui.last_now_us);
 }

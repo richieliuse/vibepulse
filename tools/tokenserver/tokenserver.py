@@ -72,6 +72,8 @@ if __package__:
     from .discovery import DiscoveryAdvertiser
     from .agent_status import AgentStatusService
     from .codex_command import resolve_codex_executable
+    from . import codex_oauth
+    from . import subscription_quota
     from .codex_interactions import (
         codex_permission_response,
         codex_question_result,
@@ -97,6 +99,8 @@ else:  # run directly: python3 tools/tokenserver/tokenserver.py
     from discovery import DiscoveryAdvertiser
     from agent_status import AgentStatusService
     from codex_command import resolve_codex_executable
+    import codex_oauth
+    import subscription_quota
     from codex_interactions import (
         codex_permission_response,
         codex_question_result,
@@ -1378,15 +1382,18 @@ def _ota_available_version():
     return newest[1] if newest else None
 
 
-def _hold_probe_lock():
+def _hold_probe_lock(path=None):
     """Non-blocking exclusive lock; returns the file object or None.
 
     ``flock`` on macOS/Linux, ``msvcrt.locking`` on Windows -- the same
     gate, different system calls. Both are released when the file closes.
+    ``path`` selects the lock file; Claude and Codex each have their own so
+    one provider's probe cannot silence the other.
     """
+    lock_path = _PROBE_LOCK_PATH if path is None else path
     try:
-        _PROBE_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-        handle = open(_PROBE_LOCK_PATH, "w")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(lock_path, "w")
         if fcntl is not None:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         elif msvcrt is not None:
@@ -1780,12 +1787,15 @@ def get_limits():
 
 
 # ---------------------------------------------------------------------------
-# Codex limits: PASSIVE reading -- the Codex CLI writes its rate limits
-# into the rollout files (~/.codex/sessions/**/rollout-*.jsonl) every time
-# it runs: used_percent, window_minutes (10080 = the week window) and
-# resets_at (epoch). We read the latest snapshot; if the window has reset
-# since (resets_at passed) the figure is meaningless and we serve null --
-# never old percentages pretending to be fresh.
+# Codex limits. The preferred source is the ChatGPT OAuth usage API
+# (GET .../wham/usage), the same call CodexBar makes from auth.json. The
+# local `codex app-server` read is the fallback when that credential is
+# missing, expired, or rejected. Rollout files remain the last resort when
+# the CLI returns nothing. Upstream calls use Claude's probe cadence:
+# 240 s, then 480 s and 960 s after failures, a local 15 s re-read while
+# the saved token cannot be used, and at least 10 minutes after HTTP 429.
+# A 429 does not fall through to the CLI: app-server would hit the same
+# account again. The token never leaves this process.
 
 # Follows CODEX_HOME, just like the Codex CLI and the month scan: the
 # desktop app and managed Windows installs set it, and run-windows-task.ps1
@@ -1794,12 +1804,22 @@ def get_limits():
 # different profile than the month value -- on a Codex-only machine with
 # its own CODEX_HOME the port never opened.
 CODEX_SESSIONS = codex_usage.default_sessions_dir()
-CODEX_LIMITS_EVERY_S = 30
 CODEX_APP_SERVER_TIMEOUT_S = 15
 CODEX_LIMIT_SCAN_BYTES = 1024 * 1024
 CODEX_WEEK_MINUTES = 10080
+_CODEX_PROBE_LOCK_PATH = _state_dir() / "codex-probe.lock"
+_CODEX_PROBE_STATE_PATH = _state_dir() / "codex-probe-state.json"
 _codex_limits_lock = threading.Lock()
 _last_codex_limits = None
+_codex_failure_streak = 0
+_codex_cli_failure_streak = 0
+_codex_cooldown_until = 0.0
+_codex_auth_state = "unknown"
+_codex_status = "not_run"
+_codex_status_logged = None
+_last_codex_cli = 0.0
+_codex_probe_state_loaded = False
+_codex_dead_tokens = {}
 
 
 def _any_provider_dir(projects_dir):
@@ -2204,27 +2224,276 @@ def _scan_codex_limits():
     return out
 
 
+def _codex_probe_interval_s():
+    """Same ladder as the Claude probe, without the statusLine slowdown.
+
+    A missing, expired, or rejected Codex token is re-read locally. That
+    check does not call chatgpt.com. A usable token uses 240 s, doubling
+    twice after failures.
+    """
+    if _codex_auth_state in ("missing", "expired", "unauthorized"):
+        return AUTH_RECOVERY_EVERY_S
+    return LIMITS_EVERY_S * (2 ** min(_codex_failure_streak, 2))
+
+
+def _codex_cli_interval_s():
+    """How often the CLI fallback may run while the API credential is out.
+
+    The 15 s auth re-read must not spawn ``codex app-server`` every time.
+    The CLI uses the same 240/480/960 s ladder as a Claude upstream call.
+    """
+    return LIMITS_EVERY_S * (2 ** min(_codex_cli_failure_streak, 2))
+
+
+def _load_codex_probe_state_locked():
+    """Load a persisted Codex 429 rest once. Caller holds ``_codex_limits_lock``."""
+    global _codex_probe_state_loaded, _codex_cooldown_until, _codex_status
+    if _codex_probe_state_loaded:
+        return
+    _codex_probe_state_loaded = True
+    try:
+        data = json.loads(_CODEX_PROBE_STATE_PATH.read_text(encoding="utf-8"))
+        until = float(data.get("cooldown_until", 0.0))
+    except (OSError, ValueError, TypeError):
+        return
+    if math.isfinite(until) and until > time.time():
+        _codex_cooldown_until = until
+        _codex_status = (f"usage_http_429 + backoff_until_"
+                         f"{datetime.fromtimestamp(until):%H:%M} (persisted)")
+
+
+def _save_codex_probe_state(cooldown_until):
+    try:
+        _CODEX_PROBE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _CODEX_PROBE_STATE_PATH.write_text(
+            json.dumps({"cooldown_until": cooldown_until}),
+            encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _note_codex_status_locked(status):
+    """Log a Codex probe transition. Caller holds ``_codex_limits_lock``."""
+    global _codex_status, _codex_status_logged
+    _codex_status = status
+    if status != _codex_status_logged:
+        log.info("codex-probe: %s -> %s",
+                 _codex_status_logged or "start", status)
+        _codex_status_logged = status
+
+
+def _codex_usage_url():
+    path = codex_oauth.config_path()
+    base = None
+    try:
+        if path.stat().st_size <= 256 * 1024:
+            base = codex_oauth.base_url_from_config(
+                path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError):
+        base = None
+    return codex_oauth.usage_url(base)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects so the bearer token cannot leave the usage host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _read_codex_oauth_limits(now_ts=None):
+    """One OAuth usage read.
+
+    Returns ``(kind, limits, retry_after)``. ``kind`` is ``ok``,
+    ``unmapped``, ``missing``, ``expired``, ``unauthorized``,
+    ``rate_limited``, ``transport``, or ``held``. ``limits`` is the panel
+    dict only for ``ok``.
+    """
+    current = time.time() if now_ts is None else now_ts
+    auth = codex_oauth.load_auth(codex_oauth.auth_path(), current)
+    if auth.status == "expired":
+        return "expired", {}, 0
+    if auth.status != "ready" or not auth.access_token:
+        return "missing", {}, 0
+    fingerprint = codex_oauth.token_fingerprint(auth.access_token)
+    if fingerprint in _codex_dead_tokens:
+        return "unauthorized", {}, 0
+    url = _codex_usage_url()
+    if url is None:
+        return "transport", {}, 0
+    lock = _hold_probe_lock(_CODEX_PROBE_LOCK_PATH)
+    if lock is None:
+        return "held", {}, 0
+    headers = {
+        "Authorization": f"Bearer {auth.access_token}",
+        "Accept": "application/json",
+        "User-Agent": "vibepulse",
+    }
+    if auth.account_id:
+        headers["ChatGPT-Account-Id"] = auth.account_id
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        try:
+            with opener.open(request, timeout=15) as response:
+                payload = json.load(response)
+        except urllib.error.HTTPError as error:
+            retry = codex_oauth.retry_after_seconds(
+                (error.headers or {}).get("Retry-After"), time.time())
+            if error.code == 429:
+                return "rate_limited", {}, retry
+            if error.code in (401, 403):
+                _codex_dead_tokens[fingerprint] = f"http_{error.code}"
+                while len(_codex_dead_tokens) > 8:
+                    _codex_dead_tokens.pop(next(iter(_codex_dead_tokens)))
+                return "unauthorized", {}, 0
+            return "transport", {}, 0
+        except Exception:
+            return "transport", {}, 0
+    finally:
+        lock.close()
+    body = codex_oauth.app_server_body(payload)
+    if body is None:
+        return "unmapped", {}, 0
+    found = _parse_codex_rate_limits_response(
+        body, observed_at=int(current), now_ts=current)
+    if not found:
+        return "unmapped", {}, 0
+    return "ok", found, 0
+
+
+def _codex_cli_fallback():
+    """Local app-server, then the rollout tail. Returns the panel dict."""
+    found = _read_codex_app_server_limits(
+        timeout_s=CODEX_APP_SERVER_TIMEOUT_S)
+    if not found:
+        found = _scan_codex_limits()
+    return found or {}
+
+
 def _refresh_codex_limits():
     global _last_codex_limits, _last_codex_read, _codex_refreshing
+    global _codex_failure_streak, _codex_cli_failure_streak
+    global _codex_cooldown_until, _codex_auth_state, _last_codex_cli
+    replace = None
+    status = _codex_status
+    auth_state = _codex_auth_state
+    streak = "leave"
+    cooldown = None
     try:
-        refreshed = _read_codex_app_server_limits(
-            timeout_s=CODEX_APP_SERVER_TIMEOUT_S)
-        if not refreshed:
-            refreshed = _scan_codex_limits()
-    except Exception:
-        refreshed = {}
+        with _codex_limits_lock:
+            _load_codex_probe_state_locked()
+            resting = time.time() < _codex_cooldown_until
+            status = _codex_status
+        if resting:
+            streak = "increment"
+        else:
+            kind, limits, retry_after = _read_codex_oauth_limits()
+            if kind == "ok":
+                replace = limits
+                status = "usage_http_200 + ok"
+                auth_state = "ready"
+                streak = "reset"
+                cooldown = 0.0
+            elif kind == "rate_limited":
+                cooldown = time.time() + max(int(retry_after or 0), 600)
+                status = (f"usage_http_429 + backoff_until_"
+                          f"{datetime.fromtimestamp(cooldown):%H:%M}")
+                _save_codex_probe_state(cooldown)
+                replace = {}
+                auth_state = "ready"
+                streak = "increment"
+            elif kind == "unmapped":
+                status = "usage_http_200 + no_mapped_limits"
+                auth_state = "ready"
+                replace = {}
+                streak = "increment"
+            elif kind == "transport":
+                status = "usage_request_failed"
+                auth_state = "ready"
+                replace = {}
+                streak = "increment"
+            elif kind == "held":
+                status = "probe_held_by_other_instance"
+                streak = "increment"
+            else:
+                auth_state = kind if kind in (
+                    "missing", "expired", "unauthorized") else "missing"
+                idle_status = {
+                    "missing": "no_codex_oauth_token",
+                    "expired": "token_expired",
+                    "unauthorized": "token_dead_awaiting_refresh",
+                }[auth_state]
+                cli_due = (
+                    _last_codex_cli == 0.0 or
+                    time.monotonic() - _last_codex_cli >= _codex_cli_interval_s())
+                if (kind == "unauthorized" and
+                        _codex_auth_state != "unauthorized"):
+                    # The saved token was just rejected. Try the CLI once
+                    # now; later 15 s re-reads wait for the CLI ladder.
+                    cli_due = True
+                if not cli_due:
+                    # The 15 s wake only re-read auth.json. Keep the CLI
+                    # snapshot and its status until the CLI ladder is due.
+                    status = _codex_status
+                    streak = "leave"
+                else:
+                    found = _codex_cli_fallback()
+                    replace = found
+                    _last_codex_cli = time.monotonic()
+                    if found:
+                        status = "cli"
+                        _codex_cli_failure_streak = 0
+                        streak = "reset"
+                    else:
+                        status = idle_status + "; cli_empty"
+                        _codex_cli_failure_streak += 1
+                        streak = "increment"
+    except Exception as error:
+        status = f"probe_crashed: {type(error).__name__}"
+        replace = {}
+        streak = "increment"
+        log.exception("the codex probe crashed")
     with _codex_limits_lock:
-        _last_codex_limits = refreshed
+        if cooldown is not None:
+            _codex_cooldown_until = cooldown
+        if replace is not None:
+            _last_codex_limits = replace
+        _codex_auth_state = auth_state
+        if streak == "reset":
+            _codex_failure_streak = 0
+        elif streak == "increment":
+            _codex_failure_streak += 1
+        _note_codex_status_locked(status)
         _last_codex_read = time.monotonic()
         _codex_refreshing = False
+
+
+def _codex_probe_view():
+    """Codex probe diagnostics for ``GET /``. No token, no account id."""
+    with _codex_limits_lock:
+        status = _codex_status
+        streak = _codex_failure_streak
+        interval_s = _codex_probe_interval_s()
+        probed_at = _last_codex_read
+        cooldown_left = _codex_cooldown_until - time.time()
+    return {
+        "codexProbe": status,
+        "codexProbeStreak": streak,
+        "codexProbeIntervalS": int(interval_s),
+        "codexProbeCooldownLeftS": (int(math.ceil(cooldown_left))
+                                    if cooldown_left > 0 else None),
+        "codexProbeAgeS": (int(time.monotonic() - probed_at)
+                           if probed_at else None),
+    }
 
 
 def _read_codex_limits():
     global _codex_refreshing
     with _codex_limits_lock:
         if ((_last_codex_read == 0.0 or
-             time.monotonic() - _last_codex_read > CODEX_LIMITS_EVERY_S) and
-                not _codex_refreshing):
+             time.monotonic() - _last_codex_read > _codex_probe_interval_s())
+                and not _codex_refreshing):
             _codex_refreshing = True
             threading.Thread(
                 target=_refresh_codex_limits,
@@ -2649,6 +2918,20 @@ def _start_usage_refresh(projects_dir, max_tracker_store, name):
     ).start()
 
 
+_subscription_probes_enabled = True
+
+
+def _subscription_wire(now_ts):
+    """Grok and Cursor subscription lanes. Nulls until a probe lands.
+
+    Tests turn the probes off so a suite run never calls the upstream
+    accounts on this machine. The keys stay in the payload either way.
+    """
+    if _subscription_probes_enabled:
+        subscription_quota.kick_all()
+    return subscription_quota.fields(now_ts)
+
+
 def get_snapshot(projects_dir: Path, history=None, now_ts=None,
                  quota_cache=None, max_tracker_store=None):
     """Build the /api/tokens v2 payload.
@@ -2886,6 +3169,7 @@ def get_snapshot(projects_dir: Path, history=None, now_ts=None,
     # and the device decides itself (against its running version) whether
     # to show the notice.
     result["otaAvailableVersion"] = _ota_available_version()
+    result.update(_subscription_wire(current_ts))
     # Additive key (tokens_parse.c skips unknown top-level keys): says
     # whether the volume counters above are measurements, placeholders or
     # frozen. Captured under the lock above, from the SAME read that chose
@@ -3626,6 +3910,8 @@ class Handler(BaseHTTPRequestHandler):
                 # Status, backoff, credential and header evidence come from
                 # one locked read so they always describe the same cycle.
                 **_probe_view(),
+                **_codex_probe_view(),
+                **subscription_quota.diagnostics(),
                 "claudeLocalUsage": _claude_plan_usage_status,
                 "claudeStatusline": {**_claude_statusline_view,
                                      "bridged": _claude_statusline_bridged,
