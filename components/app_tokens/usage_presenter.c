@@ -57,6 +57,30 @@ static void format_reset(const tk_limit *limit,
   format_duration_short(limit->reset_min, short_out, short_capacity);
 }
 
+/* Nearest whole percent, without calling a partial remainder full or empty. */
+static int rounded_percent(double value) {
+  int shown;
+  if (value <= 0.0) return 0;
+  if (value >= 100.0) return 100;
+  shown = (int)(value + 0.5);
+  if (shown <= 0) return 1;
+  if (shown >= 100) return 99;
+  return shown;
+}
+
+/* The wire percent is how much of the window is already used. */
+static void present_remaining(usage_card_view *card) {
+  double left;
+  if (!card->has_pct) return;
+  left = 100.0 - card->pct;
+  if (left < 0.0) left = 0.0;
+  if (left > 100.0) left = 100.0;
+  card->pct = left;
+  card->meter_remaining = 1;
+  snprintf(card->pct_text, sizeof card->pct_text, "%d%%",
+           rounded_percent(left));
+}
+
 static void build_card(usage_card_view *out, usage_card_kind kind,
                        const char *label, const tk_limit *limit) {
   memset(out, 0, sizeof *out);
@@ -87,10 +111,29 @@ static void build_card(usage_card_view *out, usage_card_kind kind,
   }
 }
 
+static const char *provider_name(usage_provider provider) {
+  switch (provider) {
+    case USAGE_PROVIDER_CODEX: return "CODEX";
+    case USAGE_PROVIDER_GROK: return "GROK";
+    case USAGE_PROVIDER_CURSOR: return "CURSOR";
+    case USAGE_PROVIDER_CLAUDE:
+    default: return "CLAUDE";
+  }
+}
+
 static void build_hero_quota(const tk_tokens *tokens, usage_provider provider,
                              usage_card_view *out) {
   if (provider == USAGE_PROVIDER_CODEX) {
     build_card(out, USAGE_CARD_ALL_WEEK, "WEEKLY", &tokens->codex_week);
+    present_remaining(out);
+    return;
+  }
+  if (provider == USAGE_PROVIDER_GROK) {
+    build_card(out, USAGE_CARD_ALL_WEEK,
+               tokens->has_grok_quota_label && tokens->grok_quota_label[0]
+                   ? tokens->grok_quota_label : "CREDITS",
+               &tokens->grok_credit);
+    present_remaining(out);
     return;
   }
   if (tokens->has_claude_model_week_label &&
@@ -115,7 +158,7 @@ void usage_presenter_build_hero(const tk_tokens *tokens,
   memset(out, 0, sizeof *out);
   out->provider = provider;
   snprintf(out->provider_label, sizeof out->provider_label, "%s",
-           provider == USAGE_PROVIDER_CODEX ? "CODEX" : "CLAUDE");
+           provider_name(provider));
   build_hero_quota(tokens, provider, &out->quota);
 }
 
@@ -132,6 +175,7 @@ static const tk_forecast *scope_forecast(const tk_tokens *tokens,
       return &tokens->claude_forecast;
     case USAGE_QUOTA_CODEX_WEEK:
       return &tokens->codex_forecast;
+    case USAGE_QUOTA_GROK:
     case USAGE_QUOTA_CLAUDE_MODEL:
     default:
       return NULL;
@@ -190,14 +234,49 @@ void usage_presenter_build_quota_page(const tk_tokens *tokens,
       limit = &tokens->claude_week;
       break;
     case USAGE_QUOTA_CODEX_WEEK:
+      out->provider = USAGE_PROVIDER_CODEX;
+      build_card(&out->quota, USAGE_CARD_ALL_WEEK,
+                 "WEEKLY", &tokens->codex_week);
+      present_remaining(&out->quota);
+      limit = &tokens->codex_week;
+      break;
+    case USAGE_QUOTA_GROK:
+      out->provider = USAGE_PROVIDER_GROK;
+      build_card(&out->quota, USAGE_CARD_ALL_WEEK,
+                 tokens->has_grok_quota_label && tokens->grok_quota_label[0]
+                     ? tokens->grok_quota_label : "CREDITS",
+                 &tokens->grok_credit);
+      present_remaining(&out->quota);
+      limit = &tokens->grok_credit;
+      break;
     default:
       out->provider = USAGE_PROVIDER_CODEX;
       build_card(&out->quota, USAGE_CARD_ALL_WEEK,
                  "WEEKLY", &tokens->codex_week);
+      present_remaining(&out->quota);
       limit = &tokens->codex_week;
       break;
   }
   build_countdown(out, limit, scope_forecast(tokens, scope));
+}
+
+void usage_presenter_build_cursor_page(const tk_tokens *tokens,
+                                       usage_cursor_page_view *out) {
+  tk_tokens empty = {0};
+  if (!out) return;
+  if (!tokens) tokens = &empty;
+  memset(out, 0, sizeof *out);
+  const tk_limit *limits[4] = {
+      &tokens->cursor_total, &tokens->cursor_models,
+      &tokens->cursor_third, &tokens->cursor_bot,
+  };
+  static const char *const labels[4] = {
+      "TOTAL", "CURSOR", "THIRD PARTY", "GROK BOT",
+  };
+  for (int i = 0; i < 4; i++) {
+    build_card(&out->lanes[i], USAGE_CARD_ALL_WEEK, labels[i], limits[i]);
+    present_remaining(&out->lanes[i]);
+  }
 }
 
 void usage_presenter_build_claude_details(

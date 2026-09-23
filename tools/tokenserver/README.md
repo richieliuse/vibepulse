@@ -107,7 +107,7 @@ command line.
 
 Serves Claude and Codex usage as flat JSON in the glance pattern
 (contract v2). The screen fetches `/api/tokens` over the LAN every 30
-seconds. Pure Python 3 stdlib -- nothing to install. Three sources:
+seconds. Pure Python 3 stdlib -- nothing to install. Five sources:
 
 1. **The volume** -- `~/.claude/projects/**/*.jsonl` is scanned
    incrementally: today's/this month's tokens, burn rate, sessions.
@@ -129,13 +129,44 @@ seconds. Pure Python 3 stdlib -- nothing to install. Three sources:
    file must be at most 20 minutes old and an earlier authenticated cache
    entry must still carry the pool's valid reset. The model week is never
    guessed and therefore stays stale until the OAuth probe recovers.
-3. **Codex's ceilings** -- the service asks Codex's local, read-only app
-   server via `account/rateLimits/read`, i.e. the same current snapshot the
-   Codex panel shows. If the app server is missing a passive fallback is
-   used: bounded reading of the 20 newest
-   `~/.codex/sessions/**/rollout-*.jsonl` (at most the last MiB per file).
-   Only Codex's actual `event_msg`/`token_count` event with a direct
-   `payload.rate_limits` is accepted in the fallback.
+3. **Codex's ceilings** -- the service prefers the ChatGPT OAuth usage
+   API, the same call CodexBar makes: it reads `tokens.access_token` from
+   `$CODEX_HOME/auth.json` (or `~/.codex/auth.json`) and
+   `GET`s `https://chatgpt.com/backend-api/wham/usage`. The token is not
+   refreshed, not written back, and not logged. Upstream uses the Claude
+   probe cadence: 240 s while the call succeeds, 480 s then 960 s after
+   failures, and at least 10 minutes after HTTP 429. A 429 does not fall
+   through to the CLI. While the saved token is missing, expired, or
+   rejected, the file is re-read every 15 s and no usage request is sent.
+   That is when the local read-only `codex app-server`
+   `account/rateLimits/read` runs, on the same 240/480/960 s ladder rather
+   than on the 15 s re-read. If the app server returns nothing, a passive
+   fallback reads the 20 newest `~/.codex/sessions/**/rollout-*.jsonl`
+   (at most the last MiB per file). Only Codex's actual
+   `event_msg`/`token_count` event with a direct `payload.rate_limits` is
+   accepted in that fallback.
+4. **Grok credits** — when `grok login` has written a non-expired token to
+   `$GROK_HOME/auth.json` (or `~/.grok/auth.json`), the service
+   `GET`s `https://cli-chat-proxy.grok.com/v1/billing?format=credits`.
+   The bearer is the OIDC `key`. It is not refreshed or logged. The page
+   shows `creditUsagePercent`, or `onDemandUsed / onDemandCap` only when
+   the percent field is absent and the cap is positive. The label is
+   WEEKLY, MONTHLY, or CREDITS from the billing-period length.
+5. **Cursor plan bars** — the service reads `cursorAuth/accessToken` from
+   Cursor.app's read-only state database and calls
+   `GET https://cursor.com/api/usage-summary` plus
+   `POST https://cursor.com/api/dashboard/get-sand-usage-status`.
+   macOS: `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`.
+   Windows: `%APPDATA%\Cursor\User\globalStorage\state.vscdb`.
+   The four bars are Total, Cursor models, Third Party, and Grok Bot.
+   A Grok Bot failure leaves the other three in place. The app JWT is sent
+   as the `WorkosCursorSessionToken` cookie Cursor's dashboard expects.
+   Browser cookie stores and `/api/auth/me` are not used. The token is not
+   refreshed, written to disk, or logged.
+
+   Both probes use the Claude cadence: 240 s on success, 480 s then 960 s
+   after a failure, and at least 10 minutes after HTTP 429. `GET /` reports
+   them as `grokProbe` and `cursorProbe`.
 
 General weekly ceilings are kept strictly apart from named model quotas.
 For Codex, `limit_name` must be absent, null or an empty string and
@@ -361,7 +392,8 @@ penalty box away -- remains on Windows: `fcntl` is missing there, so the
 lock is taken with `msvcrt.locking` instead. The same non-blocking gate,
 another system call.
 
-The Codex half works too. The quota read starts `codex app-server` and
+The Codex half works too. The preferred read is the OAuth usage API and
+does not start a process. The CLI fallback starts `codex app-server` and
 reads its stdout; that used to be done with `select.select`, which on
 Windows only takes sockets -- never pipes. The read now happens in a reader
 thread with a queue, the same code on every platform.

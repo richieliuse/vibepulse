@@ -37,7 +37,7 @@ static const char *TAG = "tokens";
  * 300 s cap; a success resets. The recovery task's notification still cuts
  * a long wait short, so a station recycle gets its immediate retry. */
 #define FETCH_CAP_MS 300000
-#define BODY_MAX 2048
+#define BODY_MAX 4096
 #define RECOVERY_CHECK_MS 5000
 #define TOKENS_STALE_AFTER_US (120LL * 1000000LL)
 

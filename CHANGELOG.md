@@ -7,12 +7,28 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 
 ### Changed
 
+- Codex, Cursor, and Grok quota pages show the remaining window, not the
+  used percent reported by the upstream API. Today's burn stays under USED
+  TODAY. Grok's remaining bar uses the bright silver sampled from the
+  official mark (`#DDDDDD`).
+- Codex quota prefers the ChatGPT OAuth usage API (`wham/usage`, from the
+  local Codex `auth.json`) and falls back to `codex app-server` only when
+  that credential is missing, expired, or rejected. The upstream probe uses
+  the Claude cadence: 240 s, then 480 s and 960 s, with at least 10 minutes
+  of rest after HTTP 429. The access token is not refreshed or logged.
 - Encrypted live-status publishing runs at most every five seconds instead of
   two, reducing normal host status uploads by 60%. Changed activity can appear
   up to three seconds later; approval delivery and signed expiry are unchanged.
 
 ### Added
 
+- Grok and Cursor subscription quotas on the panel. Grok is one Codex-style
+  page fed by the local `grok` login (`~/.grok/auth.json`, CLI-proxy credits).
+  Cursor is four equal cells — Total, Cursor models, Third Party, and Grok
+  Bot — read from the local Cursor.app session. Both probes use the Claude
+  cadence (240 s, then 480 s and 960 s, at least 10 minutes after HTTP 429)
+  and do not refresh or log the access token. An app update leaves the saved
+  Wi-Fi network in NVS.
 - Owner photographs of the working 2.41 V2, disclosed Waveshare affiliate
   product links, and a [coming-soon hardware list](README.md#coming-soon--hardware-on-the-workbench).
   AMOLED 1.75/1.8/1.91 ports are planned; RGB matrix hardware is experimental.

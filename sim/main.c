@@ -1323,6 +1323,51 @@ static int run_vibepulse_static_qa(void) {
   tokens_show_view(VIEW_CODEX_WEEKLY);
   dump_frame("vibepulse-codex-missing");
 
+  /* Grok is the Codex page with its own subscription window. Cursor is that
+   * page split into four equal cells. Capture live, stale, and empty so the
+   * raster review is not only the happy path. */
+  tk_tokens grok = {0};
+  grok.grok_credit = forecast_limit(64, 8640);
+  grok.grok_credit.delta_pct = 8;
+  grok.grok_credit.has_delta = 1;
+  snprintf(grok.grok_quota_label, sizeof grok.grok_quota_label, "WEEKLY");
+  grok.has_grok_quota_label = 1;
+  tokens_apply(&grok);
+  tokens_show_view(VIEW_GROK_WEEKLY);
+  dump_frame("vibepulse-grok-weekly");
+  grok.grok_credit.stale = 1;
+  tokens_apply(&grok);
+  dump_frame("vibepulse-grok-weekly-stale");
+  memset(&grok, 0, sizeof grok);
+  tokens_apply(&grok);
+  dump_frame("vibepulse-grok-no-data");
+
+  tk_tokens cursor = {0};
+  cursor.cursor_total = forecast_limit(100, 20160);
+  cursor.cursor_total.delta_pct = 12;
+  cursor.cursor_total.has_delta = 1;
+  cursor.cursor_models = forecast_limit(46, 20160);
+  cursor.cursor_models.delta_pct = 4;
+  cursor.cursor_models.has_delta = 1;
+  cursor.cursor_third = forecast_limit(80, 20160);
+  cursor.cursor_third.delta_pct = 9;
+  cursor.cursor_third.has_delta = 1;
+  cursor.cursor_bot = forecast_limit(12, 4320);
+  cursor.cursor_bot.delta_pct = 3;
+  cursor.cursor_bot.has_delta = 1;
+  tokens_apply(&cursor);
+  tokens_show_view(VIEW_CURSOR);
+  dump_frame("vibepulse-cursor-quad");
+  cursor.cursor_total.stale = 1;
+  cursor.cursor_models.stale = 1;
+  cursor.cursor_third.stale = 1;
+  cursor.cursor_bot.stale = 1;
+  tokens_apply(&cursor);
+  dump_frame("vibepulse-cursor-stale");
+  memset(&cursor, 0, sizeof cursor);
+  tokens_apply(&cursor);
+  dump_frame("vibepulse-cursor-no-data");
+
   /* GitHub is one optional full-screen project section: stars dominate,
    * forks stay secondary, and provenance is tested with identical metrics. */
   apply_github_file("github.json", false);

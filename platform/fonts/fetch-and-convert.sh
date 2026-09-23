@@ -30,6 +30,9 @@ conv() { font_conv --font "src/IBMPlexSans-$1.ttf" --size "$2" \
 # Sifferfonter (Bold). Ranger: 0-9, komma, mellanslag, U+00A0, %, en-dash.
 conv Bold     146 "0x30-0x39,0x2C,0x20,0xA0,0x25,0x2013" plex_num_146
 conv Bold     164 "0x30-0x39,0x25,0x2E,0x2013"           plex_num_164
+# 82: Cursor quadrants. Half of the 164 px quota hero (line box 119 -> 60),
+# same glyphs including % and the en dash. Do not scale plex_num_164.
+conv Bold      82 "0x30-0x39,0x25,0x2E,0x2013"           plex_num_82
 # 84: OTA-ringens mm:ss-klocka — 118:an svämmar över ringens innerradie
 # (rastergranskning 2026-08-14), 84 är mockupens klockstorlek. Bara det
 # klockan behöver: siffror, kolon, mellanslag.

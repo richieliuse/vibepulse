@@ -10,7 +10,7 @@ you, and (if you want) lets you answer it with a tap on the glass. It packs
 too: one command moves it onto whatever WiFi you are on today, and one
 button-hold on the panel opens its own settings on the glass.**
 
-Claude Code and Codex usage, live agent activity, and a full-screen
+Claude Code, Codex, Grok, and Cursor usage, live agent activity, and a full-screen
 **NEEDS YOU** alert you can answer with a tap. A three-second hold on the
 panel's one user button opens **SETTINGS** on the glass — update the firmware,
 teach it a new network, choose Labs displays, or read its address. A ~$30 ESP32-S3 panel plus a
@@ -117,7 +117,9 @@ Contributing or validating another host? Read
 
 ## What's on screen
 
-Three quota pages form the new-install base. The examples below also show
+Claude, Codex, Grok and Cursor quota pages form the new-install base.
+Grok follows the Codex page. Cursor splits the same layout into four equal
+cells: Total, Cursor models, Third Party, and Grok Bot. The examples below also show
 optional LABS pages: burn rate, two Max Trackers, API-equivalent Value and a
 GitHub project pulse. Value needs priced usage; its comparison says
 `SET YOUR PLAN COST` until a plan cost is configured. Choose the pages you
@@ -129,8 +131,11 @@ want in SETTINGS → LABS and restart to apply. The screenshots are native
 <td width="50%"><img src="docs/img/vibepulse-claude-week.png" alt="Claude weekly quota at 73%" width="100%"></td>
 <td valign="top">
 
-**Usage** — Claude's weekly and heaviest-model-weekly quota, plus Codex's
-weekly quota. Each with a reset countdown and how much you've burned today.
+**Usage** — Claude's weekly and heaviest-model-weekly window, Codex's weekly
+window, Grok's subscription credits, and Cursor's four plan bars. Codex,
+Cursor, and Grok show what is left; Claude shows how much of the window is
+used. Each has a reset countdown. Today's burn stays a dash until that
+window has a delta.
 
 </td>
 </tr>

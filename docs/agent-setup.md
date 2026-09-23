@@ -226,8 +226,19 @@ readable OAuth copy is expired:
 | `usage_http_429 + backoff_until_HH:MM` | Rate-limited by the API; the probe rests until the shown time | Wait — it retries by itself |
 | `probe_crashed: <Type>` | The probe itself hit a bug (crash before it could classify the failure) | Read `~/Library/Logs/torget-tokenserver.log` on macOS or `%LOCALAPPDATA%\VibePulse\Logs\torget-tokenserver.log` on Windows; worth filing |
 
-Codex is read separately from its local app-server, so a bad `claudeProbe`
-never explains missing Codex numbers, and vice versa.
+Codex quota prefers the ChatGPT OAuth usage API on the same cadence as
+`claudeProbe` (240 s, then 480 s and 960 s). `GET /` reports that as
+`codexProbe`. When `codexProbe` is `no_codex_oauth_token`, `token_expired`,
+or `token_dead_awaiting_refresh`, the service falls back to the local
+`codex app-server` instead of calling the API. A bad `claudeProbe` never
+explains missing Codex numbers, and vice versa.
+
+Grok and Cursor are separate probes on the same `GET /` response:
+`grokProbe` and `cursorProbe`. Grok reads `$GROK_HOME/auth.json` or
+`~/.grok/auth.json` (`grok login`). Cursor reads the local Cursor.app
+session database. Neither probe refreshes a token. `no_grok_oauth_token`
+and `no_cursor_session` mean that login is missing on this computer; the
+other providers keep their own numbers.
 
 Also read `claudeCredential` on the same `GET /` response. It contains only a
 safe status and whole minutes remaining—never either OAuth token. `expiring`

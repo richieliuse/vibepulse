@@ -9,12 +9,16 @@
  * Speglar Mac-tjänstens /api/tokens (kontrakt v2) minus transportfälten —
  * VibePulse-datats kontrakt enligt glance-mönstret: platt JSON, tal inte
  * strängar, en takt så appen kan ticka lokalt. Tjänsten (tools/tokenserver/)
- * kombinerar tre källor:
+ * kombinerar källorna:
  *
  *  1. Claude Codes sessionsloggar — tokenvolymen (dag/månad/takt/sessioner).
  *  2. Rate-limit-headrarna från ett minimalt Claude-API-anrop (Clawdmeter-
  *     mönstret) — sessionens 5h-fönster + veckofönstret i procent.
- *  3. Codex CLI:s rollout-loggar (passiv läsning) — Codex fönster.
+ *  3. Codex: ChatGPT usage API, then the local CLI.
+ *  4. Grok subscription credits from the local grok login.
+ *  5. Cursor subscription bars from the local Cursor.app session.
+ *     The last two are optional keys: an older service omits them and the
+ *     pages show dashes.
  *
  * Varje limit är (procent använt, minuter till nollning). Fälten kan vara
  * null i payloaden (nyckelring/probe/loggar otillgängliga, eller planen
@@ -126,6 +130,11 @@ typedef struct {
    * modellen (Fable/Opus) — tredje raden i Claudes egen usage-panel. */
   tk_limit claude_session, claude_week, claude_model_week;
   tk_limit codex_session, codex_week;
+  /* Optional subscription lanes. Absent keys leave has_* at 0. */
+  tk_limit grok_credit;
+  char grok_quota_label[TK_QUOTA_LABEL_CAP];
+  int has_grok_quota_label;
+  tk_limit cursor_total, cursor_models, cursor_third, cursor_bot;
   char claude_model_week_label[TK_QUOTA_LABEL_CAP];
   int has_claude_model_week_label;
   /* OTA-annonsen: senaste byggets version pa Macen. Enheten jamfor sjalv

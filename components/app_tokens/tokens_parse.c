@@ -65,6 +65,38 @@ static bool limit_pair(const cJSON *root, const char *pct_key,
   return true;
 }
 
+/* Additive lanes. A missing or unusable value stays unknown and does
+ * not reject the Claude/Codex payload around it. */
+static void optional_pct_field(const cJSON *root, const char *key,
+                               double *out, int *has_out) {
+  const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, key);
+  if (!cJSON_IsNumber(item) || !isfinite(item->valuedouble) ||
+      item->valuedouble < 0 || item->valuedouble > 100) {
+    return;
+  }
+  *out = item->valuedouble;
+  *has_out = 1;
+}
+
+static void optional_reset_field(const cJSON *root, const char *key,
+                                 int *out, int *has_out) {
+  const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, key);
+  if (!cJSON_IsNumber(item)) return;
+  double value = item->valuedouble;
+  if (!isfinite(value) || value < 0 || value > INT_MAX ||
+      trunc(value) != value) {
+    return;
+  }
+  *out = (int)value;
+  *has_out = 1;
+}
+
+static void optional_limit_fields(const cJSON *root, const char *pct_key,
+                                  const char *reset_key, tk_limit *out) {
+  optional_pct_field(root, pct_key, &out->pct, &out->has_pct);
+  optional_reset_field(root, reset_key, &out->reset_min, &out->has_reset);
+}
+
 static bool optional_stale(const cJSON *root, const char *key,
                            tk_limit *out) {
   const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, key);
@@ -207,6 +239,12 @@ static bool known_top_level_key(const char *key) {
       "codexForecastPctAtReset", "codexForecastPaceFactor",
       "codexForecastAt", "codexForecastOffsetMin",
       "otaAvailableVersion", "value", "claudeSourcePresent",
+      "grokCreditPct", "grokCreditResetMin", "grokCreditStale",
+      "grokQuotaLabel",
+      "cursorTotalPct", "cursorTotalResetMin", "cursorTotalStale",
+      "cursorModelsPct", "cursorModelsResetMin", "cursorModelsStale",
+      "cursorThirdPct", "cursorThirdResetMin", "cursorThirdStale",
+      "cursorBotPct", "cursorBotResetMin", "cursorBotStale",
   };
   for (size_t index = 0; index < sizeof keys / sizeof keys[0]; index++) {
     if (strcmp(key, keys[index]) == 0) return true;
@@ -440,6 +478,22 @@ bool tk_tokens_parse(const char *json, size_t len, tk_tokens *out) {
                       &t.claude_model_week)) goto done;
   if (!optional_stale(root, "codexWeekStale", &t.codex_week)) goto done;
 
+  optional_limit_fields(root, "grokCreditPct", "grokCreditResetMin",
+                        &t.grok_credit);
+  optional_limit_fields(root, "cursorTotalPct", "cursorTotalResetMin",
+                        &t.cursor_total);
+  optional_limit_fields(root, "cursorModelsPct", "cursorModelsResetMin",
+                        &t.cursor_models);
+  optional_limit_fields(root, "cursorThirdPct", "cursorThirdResetMin",
+                        &t.cursor_third);
+  optional_limit_fields(root, "cursorBotPct", "cursorBotResetMin",
+                        &t.cursor_bot);
+  if (!optional_stale(root, "grokCreditStale", &t.grok_credit)) goto done;
+  if (!optional_stale(root, "cursorTotalStale", &t.cursor_total)) goto done;
+  if (!optional_stale(root, "cursorModelsStale", &t.cursor_models)) goto done;
+  if (!optional_stale(root, "cursorThirdStale", &t.cursor_third)) goto done;
+  if (!optional_stale(root, "cursorBotStale", &t.cursor_bot)) goto done;
+
   /* Additiv, valfri: usageTotals.placeholder (issue #62). Bara en riktig
    * boolean true gör räknarna till platshållare; ett saknat, felformat
    * eller icke-booleskt block betyder "mätningar" — samma öppna hand som
@@ -458,6 +512,9 @@ bool tk_tokens_parse(const char *json, size_t len, tk_tokens *out) {
     }
   }
 
+  optional_label(root, trust_optional_strings, "grokQuotaLabel",
+                 t.grok_quota_label, sizeof t.grok_quota_label,
+                 &t.has_grok_quota_label);
   optional_label(root, trust_optional_strings, "claudeModelWeekLabel",
                  t.claude_model_week_label,
                  sizeof t.claude_model_week_label,

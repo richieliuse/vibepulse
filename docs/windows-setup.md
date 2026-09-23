@@ -297,8 +297,9 @@ Two failures that look similar are intentionally separate:
   Fable/Opus remains honestly stale until a supported Claude client refreshes
   the readable credential.
 - Codex can be logged in through the desktop app while the Store alias is not
-  executable by the background service. `PASS Codex executable` plus a fresh
-  `codexWeekStale: false` proves the standalone CLI/app-server path instead.
+  executable by the background service. A fresh `codexWeekStale: false` with
+  `codexProbe` of `usage_http_200 + ok` is the OAuth usage API. `PASS Codex
+  executable` plus `codexProbe` of `cli` proves the standalone CLI fallback.
 
 ## 6. Close the physical loop
 
