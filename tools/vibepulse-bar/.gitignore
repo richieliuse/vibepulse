@@ -1,3 +1,14 @@
+# SwiftPM and Xcode output. The package source stays tracked.
 .build/
 .swiftpm/
+DerivedData/
 dist/
+*.app
+*.dSYM
+xcuserdata/
+*.xcuserstate
+*.moved-aside
+
+# Local preview renders and screen captures that are not the README frames.
+/tmp-previews/
+*.bmp
