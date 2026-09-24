@@ -22,6 +22,22 @@ on the [releases page](https://github.com/niclasvestlund-YT/vibepulse/releases).
 
 ### Added
 
+- **VibePulse Bar**, a native macOS menu bar app for the tokenserver
+  (`tools/vibepulse-bar`, Swift 6, macOS 14+). A CodexBar-style switcher
+  shows an Overview (service state plus every provider's tightest window and
+  Claude Code volume) and one tab per provider with its windows, pace and
+  live Claude/Codex sessions. Start and Pause Monitoring spawn or gracefully
+  stop the server (SIGINT first, so its cleanup runs); Quit stops the server
+  the app started and never one it did not. Crashes show the exit code and
+  the server's last log lines, and restart with 5 s to 60 s backoff. No
+  server outlives the app: an in-process launcher stops it through the same
+  SIGINT cleanup when the app crashes or is force-quit, and helpers it
+  spawned are cleared with its process group. A
+  server started elsewhere or by the `se.torget.tokenserver` LaunchAgent is
+  identified by pid and can be taken over; the LaunchAgent can be handed
+  back. Output goes to the same `~/Library/Logs/torget-tokenserver.log`, with
+  the app's own events marked `vibepulse-bar:`. Build and install with
+  `tools/vibepulse-bar/build-app.sh --install`.
 - Grok and Cursor subscription quotas on the panel. Grok is one Codex-style
   page fed by the local `grok` login (`~/.grok/auth.json`, CLI-proxy credits).
   Cursor is four equal cells — Total, Cursor models, Third Party, and Grok

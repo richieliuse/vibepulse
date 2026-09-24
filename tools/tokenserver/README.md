@@ -629,6 +629,11 @@ Windows LAN IP: `ipconfig`; reserve the chosen IPv4 address in the router.
 
 ## Autostart via launchd
 
+Prefer a visible supervisor? [VibePulse Bar](../vibepulse-bar/README.md)
+runs this service from the macOS menu bar, with start, pause, crash restarts
+and quota at a glance, and can take over from (or hand back to) the
+LaunchAgent below. Use one or the other, not both.
+
 Install from the intended clean, durable checkout with the path-safe helper:
 
 ```sh

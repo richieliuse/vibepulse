@@ -205,6 +205,35 @@ jobs:
           fi
           shellcheck --severity=warning tools/snapshot.sh
 
+  vibepulse-bar:
+    # The macOS menu bar app. Its tests include a real supervisor run: a
+    # stand-in server under /usr/bin/python3 is started, paused with SIGINT,
+    # crash-looped and taken over, and the real tokenserver.py is started,
+    # paused, restarted and quit in a scratch HOME, so this job needs a macOS
+    # runner, not a Swift container.
+    name: VibePulse Bar (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: "3.12"
+      - name: Show the Swift toolchain
+        run: swift --version
+      - name: Build and test the package
+        working-directory: tools/vibepulse-bar
+        env:
+          VPBAR_REAL_TOKENSERVER: "1"
+          VPBAR_PYTHON: ${{ steps.python.outputs.python-path }}
+        run: swift build && swift test
+      - name: Render the menu previews from the fixtures
+        working-directory: tools/vibepulse-bar
+        run: |
+          out="$RUNNER_TEMP/vibepulse-bar-previews"
+          ./build-app.sh --previews "$out"
+          test "$(ls "$out"/*.png | wc -l)" -ge 16
+
   firmware:
     name: ESP32-S3 firmware build
     runs-on: ubuntu-latest

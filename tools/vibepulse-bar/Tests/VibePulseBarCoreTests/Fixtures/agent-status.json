@@ -1,0 +1,86 @@
+{
+  "v": 2,
+  "seq": 8777,
+  "agents": {
+    "claude": {
+      "active_count": 2,
+      "jobs": [
+        {
+          "task_id": "00000000-0000-4000-8000-000000000005",
+          "event_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "state": "waiting",
+          "project": "vibepulse",
+          "activity": "approve Bash",
+          "model": "FABLE 5.1",
+          "effort": "HIGH",
+          "updated_ms": 41000
+        },
+        {
+          "task_id": "00000000-0000-4000-8000-000000000006",
+          "event_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "state": "working",
+          "project": "solelkollen",
+          "activity": "editing",
+          "model": "OPUS 5.5",
+          "effort": "MED",
+          "updated_ms": 3000
+        },
+        {
+          "task_id": "00000000-0000-4000-8000-000000000007",
+          "event_id": "cccccccccccccccccccccccccccccccc",
+          "state": "done",
+          "project": "vibepulse",
+          "activity": null,
+          "model": "OPUS 5.5",
+          "effort": "LOW",
+          "updated_ms": 620000
+        }
+      ]
+    },
+    "codex": {
+      "active_count": 1,
+      "jobs": [
+        {
+          "task_id": "00000000-0000-4000-8000-000000000001",
+          "event_id": "00000000000000000000000000000001",
+          "state": "working",
+          "project": null,
+          "activity": "thinking",
+          "model": "GPT-6 SOL",
+          "effort": "HIGH",
+          "updated_ms": 5427
+        },
+        {
+          "task_id": "00000000-0000-4000-8000-000000000002",
+          "event_id": "00000000000000000000000000000002",
+          "state": "done",
+          "project": null,
+          "activity": null,
+          "model": "CODEX AUTO REVIEW",
+          "effort": "LOW",
+          "updated_ms": 32357
+        },
+        {
+          "task_id": "00000000-0000-4000-8000-000000000003",
+          "event_id": "00000000000000000000000000000003",
+          "state": "done",
+          "project": null,
+          "activity": null,
+          "model": "CODEX AUTO REVIEW",
+          "effort": "LOW",
+          "updated_ms": 40649
+        },
+        {
+          "task_id": "00000000-0000-4000-8000-000000000004",
+          "event_id": "00000000000000000000000000000004",
+          "state": "done",
+          "project": null,
+          "activity": null,
+          "model": "CODEX AUTO REVIEW",
+          "effort": "LOW",
+          "updated_ms": 47959
+        }
+      ]
+    }
+  }
+}

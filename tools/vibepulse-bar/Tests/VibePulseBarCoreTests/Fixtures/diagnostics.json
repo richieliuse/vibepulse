@@ -1,0 +1,81 @@
+{
+  "service": "torget-tokenserver",
+  "rev": "81c8f46",
+  "srcFingerprint": "48aff3d4a708",
+  "startedAt": "2026-09-23T17:56:48+08:00",
+  "endpoint": "/api/tokens",
+  "endpoints": [
+    "/api/tokens",
+    "/api/agent-status",
+    "/api/max-tracker",
+    "/api/github"
+  ],
+  "github": {
+    "v": 1,
+    "enabled": false
+  },
+  "claudeProbe": "no_claude_oauth_token: keychain_no_entry",
+  "claudeProbeStreak": 648,
+  "claudeProbeIntervalS": 15,
+  "claudeProbeCooldownLeftS": null,
+  "claudeProbeAgeS": 0,
+  "claudeCredential": {
+    "status": "unavailable",
+    "reason": "keychain_no_entry"
+  },
+  "ratelimitHeaders": [],
+  "unknownRateLimitBuckets": [],
+  "codexProbe": "usage_http_200 + ok",
+  "codexProbeStreak": 0,
+  "codexProbeIntervalS": 240,
+  "codexProbeCooldownLeftS": null,
+  "codexProbeAgeS": 1262,
+  "grokProbe": "usage_http_200 + ok",
+  "grokProbeIntervalS": 240,
+  "grokProbeCooldownLeftS": null,
+  "grokProbeAgeS": 1262,
+  "cursorProbe": "usage_http_200 + ok",
+  "cursorProbeIntervalS": 240,
+  "cursorProbeCooldownLeftS": null,
+  "cursorProbeAgeS": 1262,
+  "claudeLocalUsage": "missing",
+  "claudeStatusline": {
+    "status": "not_installed",
+    "ageS": null,
+    "claudeCodeVersion": null,
+    "bridged": false,
+    "account": "assumed-single"
+  },
+  "quotaRegressions": [],
+  "usageComputeOk": true,
+  "usageComputeFailingForS": null,
+  "usageTotals": {
+    "state": "ready",
+    "ageS": 1263,
+    "placeholder": false
+  },
+  "maxTrackerSaveOk": true,
+  "maxTrackerSaveFailingForS": null,
+  "discovery": {
+    "status": "ready"
+  },
+  "interactions": {
+    "claude": false,
+    "codex": false,
+    "detail": false,
+    "legacyClaudePanelV1": false,
+    "relay": {
+      "status": "off"
+    },
+    "agentStatusRelay": {
+      "status": "off"
+    },
+    "panel": {
+      "status": "stale",
+      "ageS": 9847,
+      "route": "/api/agent-status",
+      "httpStallRecoveryBoot": false
+    },
+    "transport": "lan"
+  }
+}

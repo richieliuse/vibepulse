@@ -1,5 +1,49 @@
 # Lessons log
 
+## 2026-09-24 · A supervised server outlived its supervisor
+
+What happened: a review of VibePulse Bar's abnormal paths found that a
+crashed or force-quit app left its tokenserver running under pid 1, which
+only a later launch of the app would clean up, and that a SIGKILLed or
+crashed server left its `codex app-server` probe behind. Root cause: macOS
+has no parent-death signal, and a kill of the server alone never reaches
+its children. The rule now: the app runs the server through an in-process
+launcher (`vibepulse-bar-guard.py`) that watches its parent and stops the
+server through the SIGINT cleanup when the app is gone; the server leads
+its own process group, and the supervisor clears that group after every
+exit. A launch command that `exec`s away from the launcher is flagged,
+because the protection lives in that process. Guards: supervisor tests for
+the app being SIGKILLed (fake and real `tokenserver.py`), a SIGINT- and
+SIGTERM-ignoring server, a hard crash with a live helper, a quit during a
+pause, a leftover from a crashed run, and an `exec` wrapper. Watch for: a
+new start path that spawns the server without the launcher.
+
+## 2026-09-24 · A signal handler that asked AppKit to wait deadlocked the quit
+
+What happened: VibePulse Bar ignored `kill -TERM` and stayed up. Root
+cause: the handler was a main-queue dispatch source calling
+`NSApp.terminate`; the delegate answered `.terminateLater` and queued the
+graceful server stop as a main-actor task, but AppKit's wait loop cannot
+drain the main queue it was called from. The rule now: a main-queue callout
+finishes the async shutdown first and only then terminates; `.terminateLater`
+stays for event-driven quits (menu, Apple Events). Guard: verified by
+launching the bundle and sending SIGTERM; no automated test drives AppKit's
+terminate yet. Watch for: any `terminateLater` reached from a dispatch or
+Swift-concurrency callout.
+
+## 2026-09-24 · The service had no owner, so nobody could say whether it ran
+
+What happened: on the maintainer's Mac the LaunchAgent plist existed but
+was not loaded, and port 8737 was served by a terminal-started tokenserver
+reparented to pid 1: running, unsupervised, invisible, and restarted by
+nothing if it died. Root cause: two start paths (launchd, a shell) and no
+place that shows which one is live. The rule now: the service has one named
+supervisor, and the UI says which (VibePulse Bar's Running / Running
+elsewhere / Managed by launchd); quitting stops only what that supervisor
+started. Guards: `tools/vibepulse-bar` supervisor integration tests (fake
+server: SIGINT pause, crash backoff, external detection and take-over, quit
+leaving a foreign server alone).
+
 ## 2026-09-20 · A two-second status heartbeat consumes a daily request budget
 
 Cloudflare logs showed successful encrypted status PUTs roughly every two
