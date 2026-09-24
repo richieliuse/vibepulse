@@ -279,7 +279,7 @@ extension VibePulseEngine {
         var agentRelayPairs: [(String, JSONValue)] = [("status", .string(agentRelayStatus))]
         if let agentRelayReason { agentRelayPairs.append(("reason", .string(agentRelayReason))) }
         let transport = (relayStatus == "ready" || agentRelayStatus == "ready") ? "lan+encrypted-relay" : "lan"
-        return .object([
+        let identity: [(String, JSONValue)] = [
             ("service", .string("torget-tokenserver")),
             ("rev", .string("unknown")),
             ("srcFingerprint", .string("unknown")),
@@ -290,6 +290,8 @@ extension VibePulseEngine {
                 .string("/api/max-tracker"), .string("/api/github"),
             ])),
             ("github", githubPayload()),
+        ]
+        let claudeProbeFields: [(String, JSONValue)] = [
             ("claudeProbe", .string(claudeDiag.status)),
             ("claudeProbeStreak", .int(claudeDiag.failureStreak)),
             ("claudeProbeIntervalS", .int(Int(claudeDiag.interval.rounded(.towardZero)))),
@@ -298,6 +300,8 @@ extension VibePulseEngine {
             ("claudeCredential", .object(credentialPairs)),
             ("ratelimitHeaders", .array(claudeDiag.ratelimitHeaders.map(JSONValue.string))),
             ("unknownRateLimitBuckets", .array(claudeDiag.unknownBuckets.map(JSONValue.string))),
+        ]
+        let otherProbes: [(String, JSONValue)] = [
             ("codexProbe", .string(codexView.status)),
             ("codexProbeStreak", .int(codexView.streak)),
             ("codexProbeIntervalS", .int(codexView.interval)),
@@ -311,6 +315,8 @@ extension VibePulseEngine {
             ("cursorProbeIntervalS", .int(cursor.interval)),
             ("cursorProbeCooldownLeftS", cursor.cooldownLeft.map(JSONValue.int) ?? .null),
             ("cursorProbeAgeS", cursor.age.map(JSONValue.int) ?? .null),
+        ]
+        let usageFields: [(String, JSONValue)] = [
             ("claudeLocalUsage", .string(claudePlanUsageStatus(now: wall))),
             ("claudeStatusline", statuslineJSON(now: wall)),
             ("quotaRegressions", quotaRegressionsJSON(now: wall)),
@@ -320,16 +326,19 @@ extension VibePulseEngine {
             ("maxTrackerSaveOk", .bool(saveFailing == nil)),
             ("maxTrackerSaveFailingForS", saveFailing.map { .int(max(0, Int((mono - $0).rounded(.towardZero)))) } ?? .null),
             ("discovery", .object(discoveryPairs)),
-            ("interactions", .object([
-                ("claude", .bool(environment.claudeInteractions)),
-                ("codex", .bool(environment.codexInteractions)),
-                ("detail", .bool(environment.interactionDetail)),
-                ("legacyClaudePanelV1", .bool(environment.legacyClaudePanelV1)),
-                ("relay", .object(relayPairs)),
-                ("agentStatusRelay", .object(agentRelayPairs)),
-                ("panel", panelPayload(now: mono)),
-                ("transport", .string(transport)),
-            ])),
+        ]
+        let interactions: [(String, JSONValue)] = [
+            ("claude", .bool(environment.claudeInteractions)),
+            ("codex", .bool(environment.codexInteractions)),
+            ("detail", .bool(environment.interactionDetail)),
+            ("legacyClaudePanelV1", .bool(environment.legacyClaudePanelV1)),
+            ("relay", .object(relayPairs)),
+            ("agentStatusRelay", .object(agentRelayPairs)),
+            ("panel", panelPayload(now: mono)),
+            ("transport", .string(transport)),
+        ]
+        return .object(identity + claudeProbeFields + otherProbes + usageFields + [
+            ("interactions", .object(interactions)),
         ])
     }
 
