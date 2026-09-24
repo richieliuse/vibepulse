@@ -12,7 +12,11 @@ tools.tokenserver.test_max_tracker
 tools.tokenserver.test_value_meter
 tools.tokenserver.test_update_prices
 tools.tokenserver.test_codex_command
+tools.tokenserver.test_codex_oauth
 tools.tokenserver.test_codex_usage
+tools.tokenserver.test_cursor_usage
+tools.tokenserver.test_grok_billing
+tools.tokenserver.test_subscription_quota
 tools.tokenserver.test_vibepulse_config
 tools.tokenserver.test_provider_gate
 tools.tokenserver.test_codex_interactions

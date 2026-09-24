@@ -8,7 +8,8 @@
 agents are doing — taps you on the shoulder when one is stuck waiting for
 you, and (if you want) lets you answer it with a tap on the glass. It packs
 too: one command moves it onto whatever WiFi you are on today, and one
-button-hold on the panel opens its own settings on the glass.**
+button-hold on the panel opens its own settings on the glass. On a Mac, a
+menu bar app starts, pauses and watches the service for you.**
 
 Claude Code, Codex, Grok, and Cursor usage, live agent activity, and a full-screen
 **NEEDS YOU** alert you can answer with a tap. A three-second hold on the
@@ -23,6 +24,11 @@ independent **Live agent status relay** can keep the Claude/Codex activity rows
 current across ordinary internet WiFi. Every cloud feature is off by default;
 only the encrypted interaction/status relay adds the pinned Python
 `cryptography` dependency.
+
+On macOS, **[VibePulse Bar](#vibepulse-bar-the-service-in-your-menu-bar)**
+runs that service from the menu bar: a CodexBar-style overview plus one tab
+per provider, Start and Pause Monitoring, crash restarts with the reason on
+screen, and Quit that also stops the service it started.
 
 Current source supports the original **2.16-inch square panel** and the
 **Waveshare 2.41 V2 in 600 × 450 landscape**. For V2 revision checks, build
@@ -541,7 +547,7 @@ For maintaining these product links, see the [affiliate link notes](docs/affilia
 
 | Computer | Status | Autostart |
 |---|---|---|
-| macOS | **Supported.** Daily development and physical panel reviews. macOS ships an older Python; `brew install python` gives you 3.11+ | launchd |
+| macOS | **Supported.** Daily development and physical panel reviews. macOS ships an older Python; `brew install python` gives you 3.11+ | launchd, or the [VibePulse Bar](#vibepulse-bar-the-service-in-your-menu-bar) menu bar app |
 | Windows | **Supported.** v1 core, the physical answer loop, and the sign-in/sleep/reboot lifecycle verified on a real PC | Task Scheduler |
 | Linux | **Not yet.** Tracked in [#2](https://github.com/niclasvestlund-YT/vibepulse/issues/2) | — |
 
@@ -652,7 +658,43 @@ host address, firewall, Task Scheduler, startup health, and recovery steps.
    `install` command. It atomically rewrites and fully reloads the LaunchAgent,
    retries launchd's short post-`bootout` race within a fixed bound, and keeps
    launchd from running a deleted PR worktree. Full details:
-   [tools/tokenserver/README.md](tools/tokenserver/README.md).
+   [tools/tokenserver/README.md](tools/tokenserver/README.md). Prefer to see
+   and control it? Use [VibePulse Bar](#vibepulse-bar-the-service-in-your-menu-bar)
+   instead of the LaunchAgent.
+
+## VibePulse Bar: the service in your menu bar
+
+The Python service is easy to start and hard to watch: under launchd it is
+invisible, and one started from a terminal can outlive the terminal as an
+orphan that still holds the port. **VibePulse Bar** is a native macOS menu
+bar app that owns the service and says so. Its layout follows
+[CodexBar](https://github.com/steipete/CodexBar): a provider switcher, an
+**Overview** of the service and every provider's tightest window, and one
+tab per provider with its windows, pace and live Claude/Codex sessions.
+
+<p>
+<img src="tools/vibepulse-bar/screenshots/overview-dark.png" width="250" alt="VibePulse Bar Overview: tokenserver running, a Claude session that needs you, every provider's tightest window">
+<img src="tools/vibepulse-bar/screenshots/codex-dark.png" width="250" alt="VibePulse Bar Codex tab: weekly window with a runs-out-early pace warning and live sessions">
+<img src="tools/vibepulse-bar/screenshots/overview-external-light.png" width="250" alt="VibePulse Bar finding a tokenserver it did not start, with a Take Over button">
+</p>
+
+- **Start / Pause Monitoring** spawns or gracefully stops the server
+  (SIGINT, so its cleanup runs). **Quit** stops the server the app started,
+  and never one it did not.
+- A crash shows its exit code and last log lines, and restarts with backoff
+  (5 s doubling to 60 s).
+- A server started elsewhere, or by the LaunchAgent, is shown with its pid
+  and can be taken over; the LaunchAgent can be handed back.
+- Same log file and same honesty rules as the panel: dashes for missing
+  data, CACHED with an age for old data.
+
+```sh
+tools/vibepulse-bar/build-app.sh --install
+```
+
+Requires macOS 14+ and Swift 6 (Xcode or the Command Line Tools). The
+screenshots are the app's own `--previews` renders from test fixtures.
+Details: [tools/vibepulse-bar/README.md](tools/vibepulse-bar/README.md).
 
 ## Vibe Labs: start small, add later
 

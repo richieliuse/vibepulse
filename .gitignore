@@ -36,3 +36,38 @@ docs/img/mockups/*.svg
 # Private board backups and generated V2 configuration.
 /backups/
 /sdkconfig.241-v2*
+
+# Local secrets and machine-specific env. Never shared.
+.env
+.env.*
+*.pem
+*.p12
+*.mobileprovision
+AuthKey_*.p8
+credentials.json
+
+# Editor and OS leftovers.
+.idea/
+.vscode/
+*.swp
+*~
+.AppleDouble
+.LSOverride
+
+# Regenerated tool caches.
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+node_modules/
+
+# SwiftPM / Xcode output. Source and Package.resolved stay tracked.
+.build/
+DerivedData/
+*.dSYM
+*.xcuserstate
+xcuserdata/
+*.moved-aside
+*.hmap

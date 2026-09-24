@@ -172,6 +172,23 @@ editing* — that exact trap cost an hour once and is why `GET /` reports
 `rev` ([lessons.md](lessons.md)) and why the smoke test compares it to
 your checkout.
 
+Under [VibePulse Bar](../tools/vibepulse-bar/README.md), the macOS menu bar
+app, both streams append to the same file (opened `O_APPEND`, so the
+server's in-place rotation still works), and the app adds its own
+supervision events in the same line format, marked `vibepulse-bar:` —
+`started tokenserver pid N via vibepulse-bar-guard.py: <command>`,
+`stopping tokenserver pid N (<reason>): SIGINT`, `tokenserver pid N exited
+with code C after <uptime>`, `restarting in S s (attempt K)`, and the
+take-over/hand-back steps. Four WARNING lines mean the no-orphan machinery
+fired and are worth a look in a comb: `app pid N is gone; stopping
+tokenserver pid M` (the app crashed or was force-quit, written by the
+launcher itself), `outlived the previous run of the app` (the next launch
+found the leftover), `cleared helpers left in pid N's process group` (the
+server died without cleaning up its `codex app-server` probe), and `replaced
+vibepulse-bar-guard.py (exec)` (the launch command defeats the launcher).
+They never contain `serving http://` or a traceback, so the smoke test's
+start and traceback counts still count only the server.
+
 Under Task Scheduler, `install-windows-task.ps1` starts
 `run-windows-task.ps1`, which appends both streams to
 **`%LOCALAPPDATA%\VibePulse\Logs\torget-tokenserver.log`** as the signed-in
