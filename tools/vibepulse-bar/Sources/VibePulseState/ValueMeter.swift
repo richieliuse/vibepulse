@@ -176,6 +176,101 @@ public enum PriceTableError: Error, Equatable {
     case unknownAccounting(provider: String, accounting: StrictJSON.Value?)
 }
 
+public struct PlanCostError: Error, Equatable, CustomStringConvertible {
+    public let message: String
+    public var description: String { message }
+    public init(_ message: String) { self.message = message }
+}
+
+/// `--plan PROVIDER=USD`, with `--plan-cost-usd` as a legacy Claude override.
+/// Later entries win. There is no provider allowlist.
+public func parsePlanCosts(entries: [String], legacyClaude: Double? = nil) throws -> [String: Double] {
+    var costs: [String: Double] = [:]
+    if let legacyClaude {
+        if !legacyClaude.isFinite || legacyClaude <= 0 {
+            throw PlanCostError("--plan-cost-usd must be a positive number, got \(pythonNumberRepr(legacyClaude))")
+        }
+        costs["claude"] = legacyClaude
+    }
+    for entry in entries {
+        let providerRaw: String
+        let raw: String
+        let separated: Bool
+        if let index = entry.firstIndex(of: "=") {
+            providerRaw = String(entry[..<index])
+            raw = String(entry[entry.index(after: index)...])
+            separated = true
+        } else {
+            providerRaw = entry
+            raw = ""
+            separated = false
+        }
+        let provider = providerRaw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !separated || provider.isEmpty {
+            throw PlanCostError("--plan expects PROVIDER=USD, got \(pythonStringRepr(entry)) (for example: --plan claude=200)")
+        }
+        guard let amount = pythonFloat(raw), amount.isFinite, amount > 0 else {
+            throw PlanCostError("--plan \(provider) needs a positive monthly cost in USD, got \(pythonStringRepr(raw))")
+        }
+        costs[provider] = amount
+    }
+    return costs
+}
+
+/// Python `float()`: surrounding whitespace, `1e2`, and a single `_` between digits.
+private func pythonFloat(_ raw: String) -> Double? {
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty { return nil }
+    var cleaned = ""
+    let chars = Array(trimmed)
+    for index in chars.indices {
+        let char = chars[index]
+        if char == "_" {
+            if index == chars.startIndex || index == chars.index(before: chars.endIndex) { return nil }
+            let previous = chars[chars.index(before: index)]
+            let next = chars[chars.index(after: index)]
+            if !isASCIIDigit(previous) || !isASCIIDigit(next) { return nil }
+            continue
+        }
+        cleaned.append(char)
+    }
+    let lower = cleaned.lowercased()
+    switch lower {
+    case "inf", "+inf", "infinity", "+infinity": return .infinity
+    case "-inf", "-infinity": return -.infinity
+    case "nan", "+nan", "-nan": return .nan
+    default: return Double(cleaned)
+    }
+}
+
+private func isASCIIDigit(_ char: Character) -> Bool {
+    char >= "0" && char <= "9"
+}
+
+private func pythonNumberRepr(_ value: Double) -> String {
+    if value.isNaN { return "nan" }
+    if value == .infinity { return "inf" }
+    if value == -.infinity { return "-inf" }
+    return String(value)
+}
+
+private func pythonStringRepr(_ text: String) -> String {
+    var out = "'"
+    for scalar in text.unicodeScalars {
+        switch scalar.value {
+        case 0x5C: out += "\\\\"
+        case 0x27: out += "\\'"
+        case 0x0A: out += "\\n"
+        case 0x0D: out += "\\r"
+        case 0x09: out += "\\t"
+        case 0x00...0x1F, 0x7F: out += String(format: "\\x%02x", scalar.value)
+        default: out.unicodeScalars.append(scalar)
+        }
+    }
+    out += "'"
+    return out
+}
+
 public func buildPayload(valueUSD: Double, unpricedTokens: Int, pricedTokens: Int,
                          claudePlan: String? = nil, codexPlan: String? = nil,
                          planCosts: [String: StrictJSON.Value] = [:], table: PriceTable,

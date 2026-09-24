@@ -93,9 +93,10 @@ func boundedDisplay(_ value: Any?, maxBytes: Int) -> String? {
     return prefix.isEmpty ? nil : prefix
 }
 
+/// POSIX `Path.name`: drop empty and `.` parts, keep `..`, return the last part.
 func pathBasename(_ value: String) -> String {
-    guard let slash = value.lastIndex(of: "/") else { return value }
-    return String(value[value.index(after: slash)...])
+    let parts = value.split(separator: "/", omittingEmptySubsequences: true).filter { $0 != "." }
+    return parts.last.map(String.init) ?? ""
 }
 
 public func sanitizeProject(_ value: Any?) -> String? {

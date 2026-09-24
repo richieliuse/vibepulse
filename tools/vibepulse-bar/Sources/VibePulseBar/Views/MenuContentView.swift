@@ -16,13 +16,19 @@ struct MenuContentView: View {
                 .padding(.top, 8)
                 .padding(.bottom, 8)
             Divider().padding(.horizontal, MenuMetrics.cardPadding)
-            Group {
-                switch self.selection {
-                case .overview:
+            // Every page stays in the layout, so the menu's frame is the tallest
+            // page. Apple sizes a menu from the view frame and does not support
+            // resizing it while it is open; CodexBar keeps the switcher frame fixed
+            // for the same reason.
+            ZStack(alignment: .topLeading) {
+                self.page(.overview) {
                     OverviewView(snapshot: self.snapshot, now: self.now, actions: self.actions,
                                  onSelect: self.onSelect)
-                case let .provider(provider):
-                    ProviderCardView(provider: provider, snapshot: self.snapshot, now: self.now)
+                }
+                ForEach(Provider.allCases) { provider in
+                    self.page(.provider(provider)) {
+                        ProviderCardView(provider: provider, snapshot: self.snapshot, now: self.now)
+                    }
                 }
             }
             .padding(.horizontal, MenuMetrics.cardPadding)
@@ -32,13 +38,21 @@ struct MenuContentView: View {
             ServiceRows(service: self.snapshot.service, actions: self.actions)
             MenuSeparator()
             MenuRow(title: "Settings…", symbol: "gearshape", shortcut: "⌘,", action: self.actions.openSettings)
-                .keyboardShortcut(",", modifiers: .command)
             MenuRow(title: "About VibePulse Bar", symbol: "info.circle", action: self.actions.about)
             MenuRow(title: self.quitTitle, symbol: "power", shortcut: "⌘Q", action: self.actions.quit)
-                .keyboardShortcut("q", modifiers: .command)
                 .padding(.bottom, 6)
         }
-        .frame(width: MenuMetrics.width)
+        .frame(width: MenuMetrics.width, alignment: .topLeading)
+        .fixedSize(horizontal: true, vertical: true)
+    }
+
+    private func page<Content: View>(_ tab: MenuTab, @ViewBuilder content: () -> Content) -> some View {
+        let selected = self.selection == tab
+        return content()
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .opacity(selected ? 1 : 0)
+            .allowsHitTesting(selected)
+            .accessibilityHidden(!selected)
     }
 
     private var quitTitle: String {
@@ -59,24 +73,18 @@ private struct ServiceRows: View {
         case .launchAgent:
             MenuRow(title: "Take Over from launchd", symbol: "arrow.down.to.line.circle",
                     action: self.actions.takeOverLaunchAgent)
-        case .running, .starting, .unresponsive, .stopping:
+        case .running, .starting, .stopping:
             MenuRow(title: "Pause Monitoring", symbol: "pause.fill",
                     isEnabled: self.service.ownsProcess && self.service.phase != .stopping,
                     action: self.actions.pause)
-        case .crashed:
-            MenuRow(title: "Pause Monitoring", symbol: "pause.fill", action: self.actions.pause)
-        case .idle, .checking, .misconfigured:
+        case .idle, .checking, .failed:
             MenuRow(title: "Start Monitoring", symbol: "play.fill",
                     isEnabled: self.service.phase != .checking,
                     action: self.actions.start)
         }
         MenuRow(title: "Restart Service", symbol: "arrow.clockwise",
-                isEnabled: self.service.ownsProcess || self.service.phase == .launchAgent
-                    || self.service.phase == .crashed,
+                isEnabled: self.service.ownsProcess,
                 action: self.actions.restart)
-        MenuRow(title: "Open Log", symbol: "doc.text.magnifyingglass", action: self.actions.openLog)
-        MenuRow(title: "Open Diagnostics", symbol: "stethoscope",
-                isEnabled: self.service.isServing, action: self.actions.openDiagnostics)
     }
 }
 
@@ -94,7 +102,6 @@ struct LiveMenuView: View {
                 actions: self.actions,
                 onSelect: { self.model.selectedTab = $0 })
         }
-        .onAppear { self.model.isMenuVisible = true }
-        .onDisappear { self.model.isMenuVisible = false }
+
     }
 }

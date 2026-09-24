@@ -22,8 +22,7 @@ struct OverviewView: View {
                 ForEach(Provider.allCases) { provider in
                     OverviewProviderRow(
                         usage: self.snapshot.usage(provider),
-                        agents: self.snapshot.agents(provider),
-                        display: self.snapshot.usageDisplay,
+                        display: .remaining,
                         stale: self.snapshot.tokensStale,
                         action: { self.onSelect(.provider(provider)) })
                 }
@@ -37,7 +36,6 @@ struct OverviewView: View {
 
 private struct OverviewProviderRow: View {
     let usage: ProviderUsage
-    let agents: ProviderAgents?
     let display: UsageDisplay
     let stale: Bool
     let action: () -> Void
@@ -47,15 +45,13 @@ private struct OverviewProviderRow: View {
         Button(action: self.action) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
-                    Image(systemName: self.usage.provider.symbol)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(self.usage.provider.accent)
-                        .frame(width: 14)
+                    Image(nsImage: ProviderMark.image(for: self.usage.provider))
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 14, height: 14)
+                        .foregroundStyle(.primary)
                     Text(self.usage.provider.displayName)
                         .font(.system(size: 13, weight: .medium))
-                    if let agents {
-                        AgentCountBadge(agents: agents)
-                    }
                     Spacer(minLength: 6)
                     Text(self.valueText)
                         .font(.system(size: 11))
@@ -94,28 +90,6 @@ private struct OverviewProviderRow: View {
         let value = self.display == .used ? "\(Format.percent(used)) used" : "\(Format.percent(100 - used)) left"
         guard let minutes = metric.window.resetMinutes else { return "\(metric.title) · \(value)" }
         return "\(value) · \(Format.duration(minutes: minutes))"
-    }
-}
-
-struct AgentCountBadge: View {
-    let agents: ProviderAgents
-
-    var body: some View {
-        if let content = self.content {
-            Text(content.text)
-                .font(.system(size: 9.5, weight: .semibold))
-                .foregroundStyle(content.color)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 1)
-                .background(Capsule().fill(content.color.opacity(0.15)))
-        }
-    }
-
-    private var content: (text: String, color: Color)? {
-        if self.agents.waitingCount > 0 { return ("\(self.agents.waitingCount) NEEDS YOU", .orange) }
-        if self.agents.errorCount > 0 { return ("\(self.agents.errorCount) ERROR", .red) }
-        if self.agents.activeCount > 0 { return ("\(self.agents.activeCount) ACTIVE", .green) }
-        return nil
     }
 }
 

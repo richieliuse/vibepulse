@@ -2,9 +2,11 @@ import AppKit
 import Observation
 import ServiceManagement
 import VibePulseBarCore
+import VibePulseServer
+import VibePulseState
 
-/// Everything one render of the menu needs, as values. The live app builds
-/// it from the supervisor and store; the preview renderer from fixtures.
+/// Everything one render of the menu needs, as values. The live app reads
+/// the engine's snapshot; the preview renderer uses fixtures.
 struct DashboardSnapshot {
     var service: ServiceSnapshot
     var tokens: TokensSnapshot?
@@ -25,7 +27,6 @@ struct DashboardSnapshot {
 
 struct Preferences: Codable, Equatable {
     var startServiceOnLaunch = true
-    var autoRestart = true
     var usageDisplay: UsageDisplay = .used
     /// `nil` picks the most constrained provider for the menu bar icon.
     var iconProvider: Provider?
@@ -33,40 +34,32 @@ struct Preferences: Codable, Equatable {
 
 enum ConfigurationSource: String {
     case saved = "Saved in VibePulse Bar"
-    case launchAgent = "Imported from the LaunchAgent"
-    case repository = "This checkout"
-    case none = "Not configured"
+    case standard = "Default"
 }
 
 @MainActor
 @Observable
 final class AppModel {
-    let supervisor: ServiceSupervisor
-    let store: MonitorStore
+    let engineHost: LiveMenuEngine
+    var engine: VibePulseEngine { self.engineHost.engine }
+    let session: EngineSession
     var selectedTab: MenuTab = .overview
     private(set) var configurationSource: ConfigurationSource
 
     var preferences: Preferences {
         didSet {
             guard self.preferences != oldValue else { return }
-            self.supervisor.autoRestart = self.preferences.autoRestart
             Self.save(self.preferences, key: Self.preferencesKey)
         }
     }
 
     var configuration: ServiceConfiguration {
-        get { self.supervisor.configuration }
+        get { self.session.configuration }
         set {
-            self.supervisor.configuration = newValue
+            self.session.configuration = newValue
+            self.engineHost.configuration = newValue
             self.configurationSource = .saved
             Self.save(newValue, key: Self.configurationKey)
-        }
-    }
-
-    var isMenuVisible = false {
-        didSet {
-            self.supervisor.isMenuVisible = self.isMenuVisible
-            self.store.isMenuVisible = self.isMenuVisible
         }
     }
 
@@ -77,61 +70,61 @@ final class AppModel {
         let (configuration, source) = Self.initialConfiguration()
         self.configurationSource = source
         let preferences = Self.load(Preferences.self, key: Self.preferencesKey) ?? Preferences()
-        let supervisor = ServiceSupervisor(configuration: configuration)
-        supervisor.autoRestart = preferences.autoRestart
+        let host = LiveMenuEngine(configuration: configuration)
+        self.engineHost = host
+        self.session = EngineSession(
+            engine: host,
+            configuration: configuration,
+            launch: SystemLaunchControl(),
+            signals: DarwinProcessSignals())
         self.preferences = preferences
-        self.supervisor = supervisor
-        self.store = MonitorStore(supervisor: supervisor)
     }
 
     func bootstrap() {
-        self.store.start()
-        Task {
-            await self.supervisor.bootstrap(startService: self.preferences.startServiceOnLaunch)
-        }
+        Task { await self.session.bootstrap(startService: self.preferences.startServiceOnLaunch) }
     }
 
     func snapshot(now: Date = Date()) -> DashboardSnapshot {
-        DashboardSnapshot(
-            service: self.supervisor.snapshot,
-            tokens: self.store.tokens,
-            tokensFetchedAt: self.store.tokensFetchedAt,
-            tokensStale: self.store.tokensAreStale(now: now),
-            agents: self.store.liveAgents(now: now),
-            agentsFetchedAt: self.store.agentsFetchedAt,
-            usageDisplay: self.preferences.usageDisplay)
+        let service = self.session.serviceSnapshot
+        let serving = service.isServing
+        return DashboardSnapshot(
+            service: service,
+            tokens: serving ? MenuReading.tokens(self.engine.snapshot) : nil,
+            tokensFetchedAt: serving ? now : nil,
+            tokensStale: !serving,
+            agents: serving ? MenuReading.agents(self.engine.agentJSON) : nil,
+            agentsFetchedAt: serving ? now : nil,
+            usageDisplay: .remaining)
     }
 
-    // MARK: Actions
-
     func startService() {
-        Task {
-            await self.supervisor.start()
-            self.store.refreshNow()
-        }
+        Task { await self.session.start() }
     }
 
     func pauseService() {
-        Task { await self.supervisor.stop() }
+        Task { await self.session.pause() }
     }
 
     func restartService() {
         Task {
-            await self.supervisor.restart()
-            self.store.refreshNow()
+            if self.session.ownsEngine {
+                await self.session.restart()
+            } else {
+                await self.session.start()
+            }
         }
     }
 
     func takeOverExternal() {
-        Task { await self.supervisor.takeOverExternal() }
+        Task { await self.session.takeOverExternal() }
     }
 
     func takeOverLaunchAgent() {
-        Task { await self.supervisor.takeOverLaunchAgent() }
+        Task { await self.session.takeOverLaunchAgent() }
     }
 
     func handBackToLaunchAgent() {
-        Task { await self.supervisor.handBackToLaunchAgent() }
+        Task { await self.session.handBack() }
     }
 
     func openLog() {
@@ -144,29 +137,16 @@ final class AppModel {
     }
 
     func openDiagnostics() {
-        NSWorkspace.shared.open(self.supervisor.client.baseURL)
+        guard self.session.ownsEngine, let port = self.session.boundPort,
+              let url = URL(string: "http://127.0.0.1:\(port)/")
+        else { return }
+        NSWorkspace.shared.open(url)
     }
 
-    /// Re-reads the LaunchAgent and makes its command the saved one.
-    func importLaunchAgent() throws {
-        self.configuration = try ServiceConfiguration.fromLaunchAgent()
-        self.configurationSource = .launchAgent
-    }
-
-    func resetToRepositoryDefault() -> Bool {
-        guard let root = Self.repositoryRoot() else { return false }
-        self.configuration = ServiceConfiguration.fromRepository(root)
-        self.configurationSource = .repository
-        return true
-    }
-
-    /// Quit: the service this app owns ends with it.
+    /// Quit stops the in-process engine. There is no child to reap.
     func shutdown() async {
-        self.store.stop()
-        await self.supervisor.shutdown()
+        await self.session.shutdown()
     }
-
-    // MARK: Launch at login
 
     var launchesAtLogin: Bool {
         SMAppService.mainApp.status == .enabled
@@ -180,32 +160,24 @@ final class AppModel {
         }
     }
 
-    // MARK: Persistence
-
     private static func initialConfiguration() -> (ServiceConfiguration, ConfigurationSource) {
         if let saved = self.load(ServiceConfiguration.self, key: self.configurationKey) {
             return (saved, .saved)
         }
-        if let imported = try? ServiceConfiguration.fromLaunchAgent() {
-            return (imported, .launchAgent)
+        var configuration = ServiceConfiguration()
+        if let repo = ProcessInfo.processInfo.environment["VIBEPULSE_GITHUB_REPO"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !repo.isEmpty {
+            configuration.githubRepo = repo
         }
-        if let root = self.repositoryRoot() {
-            return (ServiceConfiguration.fromRepository(root), .repository)
+        let configURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/VibePulse/config.json")
+        if let saved = try? VibePulseConfig.load(from: configURL) {
+            configuration.relayURL = saved.interactionRelayURL ?? ""
+            configuration.relayMailbox = saved.interactionMailbox ?? ""
+            configuration.publishInteractions = saved.interactionRelay
+            configuration.publishAgentStatus = saved.agentStatusRelay
         }
-        return (ServiceConfiguration(pythonPath: "/usr/bin/python3", scriptPath: ""), .none)
-    }
-
-    /// The checkout this bundle was built from (stamped by `build-app.sh`),
-    /// or the one it lives inside.
-    static func repositoryRoot() -> URL? {
-        let fileManager = FileManager.default
-        if let stamped = Bundle.main.object(forInfoDictionaryKey: "VPRepositoryRoot") as? String,
-           fileManager.fileExists(atPath: "\(stamped)/tools/tokenserver/tokenserver.py") {
-            return URL(fileURLWithPath: stamped)
-        }
-        return ServiceConfiguration.findRepository(from: Bundle.main.bundleURL)
-            ?? ServiceConfiguration.findRepository(
-                from: URL(fileURLWithPath: fileManager.currentDirectoryPath))
+        return (configuration, .standard)
     }
 
     private static func load<T: Decodable>(_ type: T.Type, key: String) -> T? {

@@ -40,20 +40,22 @@ public enum LaunchAgentControl {
         await CommandRunner.run("/bin/launchctl", ["disable", self.target], timeout: 5)
     }
 
-    /// Step two, after the running instance was stopped gracefully (SIGINT):
-    /// `bootout` alone would SIGTERM it past its final Max Tracker flush.
     public static func bootout() async -> CommandRunner.Result {
         await CommandRunner.run("/bin/launchctl", ["bootout", self.target], timeout: 15)
     }
 
-    public static func kickstart() async -> CommandRunner.Result {
-        await CommandRunner.run("/bin/launchctl", ["kickstart", "-k", self.target], timeout: 15)
+    public static func enable() async -> CommandRunner.Result {
+        await CommandRunner.run("/bin/launchctl", ["enable", self.target], timeout: 5)
+    }
+
+    public static func bootstrap(plistPath: String = ServiceConfiguration.launchAgentPath) async -> CommandRunner.Result {
+        await CommandRunner.run("/bin/launchctl", ["bootstrap", self.domain, plistPath], timeout: 15)
     }
 
     /// Re-enables and reloads the installed LaunchAgent.
     public static func handBack(plistPath: String = ServiceConfiguration.launchAgentPath) async -> CommandRunner.Result {
-        _ = await CommandRunner.run("/bin/launchctl", ["enable", self.target], timeout: 5)
-        return await CommandRunner.run("/bin/launchctl", ["bootstrap", self.domain, plistPath], timeout: 15)
+        _ = await self.enable()
+        return await self.bootstrap(plistPath: plistPath)
     }
 
     static func parsePID(_ printed: String) -> Int32? {

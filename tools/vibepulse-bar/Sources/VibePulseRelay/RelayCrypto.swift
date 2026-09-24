@@ -6,6 +6,8 @@ public struct RelayCryptoError: Error, Equatable, Sendable, CustomStringConverti
     public var description: String { message }
 
     public static let invalidRequestEnvelope = RelayCryptoError(message: "invalid request envelope")
+    public static let invalidVerdictEnvelope = RelayCryptoError(message: "invalid verdict envelope")
+    public static let invalidStatusEnvelope = RelayCryptoError(message: "invalid status envelope")
 
     init(message: String) { self.message = message }
 }
@@ -26,11 +28,52 @@ public struct RelayRequest: Sendable, Equatable {
     public let expiresAt: UInt32
     public let viewBytes: Data
     public let viewSHA256: Data
+
+    public init(requestID: String, challenge: Data, expiresAt: UInt32, viewBytes: Data, viewSHA256: Data) {
+        self.requestID = requestID
+        self.challenge = challenge
+        self.expiresAt = expiresAt
+        self.viewBytes = viewBytes
+        self.viewSHA256 = viewSHA256
+    }
+}
+
+public struct RelayVerdict: Sendable, Equatable {
+    public let requestID: String
+    public let challenge: Data
+    public let viewSHA256: Data
+    public let verdict: String
+    public let mac: Data
+
+    public init(requestID: String, challenge: Data, viewSHA256: Data, verdict: String, mac: Data) {
+        self.requestID = requestID
+        self.challenge = challenge
+        self.viewSHA256 = viewSHA256
+        self.verdict = verdict
+        self.mac = mac
+    }
+}
+
+public struct RelayStatus: Sendable, Equatable {
+    public let publicationID: UInt64
+    public let expiresAt: UInt32
+    public let statusBytes: Data
+    public let statusSHA256: Data
+
+    public init(publicationID: UInt64, expiresAt: UInt32, statusBytes: Data, statusSHA256: Data) {
+        self.publicationID = publicationID
+        self.expiresAt = expiresAt
+        self.statusBytes = statusBytes
+        self.statusSHA256 = statusSHA256
+    }
 }
 
 public enum InteractionRelayCrypto {
     public static let requestFrameBytes = 2048
+    public static let verdictFrameBytes = 1024
+    public static let statusFrameBytes = 2816
     public static let maxViewBytes = 640
+    public static let maxStatusBytes = 2560
     public static let maxEnvelopeBytes = 4096
     public static let gcmNonceBytes = 12
     public static let gcmTagBytes = 16
@@ -41,6 +84,11 @@ public enum InteractionRelayCrypto {
     private static let requestKeys: Set<String> = [
         "v", "requestId", "challenge", "expiresAt", "view", "viewSha256",
     ]
+    private static let verdictKeys: Set<String> = [
+        "v", "requestId", "challenge", "viewSha256", "verdict", "hmac",
+    ]
+    private static let statusMagic = Data("VPS1".utf8)
+    private static let statusHeaderBytes = 50
 
     public static func b64URLEncode(_ raw: Data) -> String {
         Data(raw).base64EncodedString()
@@ -213,6 +261,195 @@ public enum InteractionRelayCrypto {
             throw RelayCryptoError.invalidRequestEnvelope
         }
     }
+
+    public static func verdictMAC(
+        keys: RelayKeys,
+        mailbox: String,
+        request: RelayRequest,
+        verdict: String
+    ) throws -> Data {
+        let message = try verdictMACMessage(mailbox: mailbox, request: request, verdict: verdict)
+        return Data(HMAC<SHA256>.authenticationCode(for: message, using: SymmetricKey(data: keys.verdictMAC)))
+    }
+
+    public static func encodeVerdict(
+        keys: RelayKeys,
+        mailbox: String,
+        request: RelayRequest,
+        verdict: String,
+        nonce: Data? = nil,
+        padding: (@Sendable (Int) -> Data)? = nil
+    ) throws -> Data {
+        _ = try verdictMACMessage(mailbox: mailbox, request: request, verdict: verdict)
+        let nonceBytes = try resolveNonce(nonce)
+        let mac = try verdictMAC(keys: keys, mailbox: mailbox, request: request, verdict: verdict)
+        let inner = try CanonicalJSON.encodeObject([
+            "v": .int(1),
+            "requestId": .string(request.requestID),
+            "challenge": .string(b64URLEncode(request.challenge)),
+            "viewSha256": .string(b64URLEncode(request.viewSHA256)),
+            "verdict": .string(verdict),
+            "hmac": .string(b64URLEncode(mac)),
+        ])
+        let framed = try frame(json: inner, frameSize: verdictFrameBytes, padding: padding)
+        let ciphertext = try aesGCMEncrypt(
+            key: keys.verdictAEAD,
+            nonce: nonceBytes,
+            plaintext: framed,
+            aad: try verdictAAD(mailbox: mailbox, requestID: request.requestID)
+        )
+        return try outerEnvelope(nonce: nonceBytes, ciphertext: ciphertext)
+    }
+
+    public static func decodeVerdict(
+        keys: RelayKeys,
+        mailbox: String,
+        requestID: String,
+        envelope: Data
+    ) throws -> RelayVerdict {
+        do {
+            let (nonce, ciphertext) = try decodeOuter(
+                envelope,
+                ciphertextSize: verdictFrameBytes + gcmTagBytes
+            )
+            let framed = try aesGCMDecrypt(
+                key: keys.verdictAEAD,
+                nonce: nonce,
+                ciphertext: ciphertext,
+                aad: try verdictAAD(mailbox: mailbox, requestID: requestID)
+            )
+            let value = try unframe(framed, frameSize: verdictFrameBytes, keys: verdictKeys)
+            guard case let .int(version) = value["v"], version == 1 else {
+                throw RelayCryptoError(message: "unsupported verdict version")
+            }
+            guard case let .string(innerID) = value["requestId"], innerID == requestID else {
+                throw RelayCryptoError(message: "request id mismatch")
+            }
+            guard case let .string(challengeText) = value["challenge"] else {
+                throw RelayCryptoError(message: "invalid challenge")
+            }
+            let challenge = try fixedBase64(challengeText, size: 32, name: "challenge")
+            guard case let .string(digestText) = value["viewSha256"] else {
+                throw RelayCryptoError(message: "invalid view digest")
+            }
+            let digest = try fixedBase64(digestText, size: 32, name: "view digest")
+            guard case let .string(macText) = value["hmac"] else {
+                throw RelayCryptoError(message: "invalid verdict HMAC")
+            }
+            let mac = try fixedBase64(macText, size: 32, name: "verdict HMAC")
+            guard case let .string(verdict) = value["verdict"] else {
+                throw RelayCryptoError(message: "unsupported verdict")
+            }
+            _ = try verdictCode(verdict)
+            return RelayVerdict(
+                requestID: requestID,
+                challenge: challenge,
+                viewSHA256: digest,
+                verdict: verdict,
+                mac: mac
+            )
+        } catch {
+            throw RelayCryptoError.invalidVerdictEnvelope
+        }
+    }
+
+    /// Returns false on any malformed input. Does not throw.
+    public static func verifyVerdictMAC(
+        keys: RelayKeys,
+        mailbox: String,
+        request: RelayRequest,
+        verdict: RelayVerdict
+    ) -> Bool {
+        guard verdict.requestID == request.requestID,
+              constantTimeEqual(verdict.challenge, request.challenge),
+              constantTimeEqual(verdict.viewSHA256, request.viewSHA256)
+        else { return false }
+        guard let expected = try? verdictMAC(
+            keys: keys, mailbox: mailbox, request: request, verdict: verdict.verdict
+        ) else { return false }
+        return constantTimeEqual(expected, verdict.mac)
+    }
+
+    public static func encodeStatus(
+        keys: RelayKeys,
+        mailbox: String,
+        publicationID: UInt64,
+        expiresAt: UInt32,
+        statusBytes: Data,
+        nonce: Data? = nil,
+        padding: (@Sendable (Int) -> Data)? = nil
+    ) throws -> Data {
+        let digest = try validateStatusFields(
+            publicationID: publicationID,
+            expiresAt: expiresAt,
+            statusBytes: statusBytes
+        )
+        let nonceBytes = try resolveNonce(nonce)
+        let framed = try statusFrame(
+            publicationID: publicationID,
+            expiresAt: expiresAt,
+            statusBytes: statusBytes,
+            digest: digest,
+            padding: padding
+        )
+        let ciphertext = try aesGCMEncrypt(
+            key: keys.statusAEAD,
+            nonce: nonceBytes,
+            plaintext: framed,
+            aad: try statusAAD(mailbox: mailbox)
+        )
+        return try outerEnvelope(nonce: nonceBytes, ciphertext: ciphertext)
+    }
+
+    public static func decodeStatus(
+        keys: RelayKeys,
+        mailbox: String,
+        envelope: Data
+    ) throws -> RelayStatus {
+        do {
+            let (nonce, ciphertext) = try decodeOuter(
+                envelope,
+                ciphertextSize: statusFrameBytes + gcmTagBytes
+            )
+            let framed = try aesGCMDecrypt(
+                key: keys.statusAEAD,
+                nonce: nonce,
+                ciphertext: ciphertext,
+                aad: try statusAAD(mailbox: mailbox)
+            )
+            let bytes = [UInt8](framed)
+            guard bytes.count == statusFrameBytes, Data(bytes.prefix(4)) == statusMagic else {
+                throw RelayCryptoError(message: "invalid status frame")
+            }
+            let publicationID = readBigEndian(bytes, start: 4, width: 8)
+            let expires = readBigEndian(bytes, start: 12, width: 4)
+            let statusLength = Int(readBigEndian(bytes, start: 16, width: 2))
+            if statusLength > statusFrameBytes - statusHeaderBytes {
+                throw RelayCryptoError(message: "invalid status length")
+            }
+            let digest = Data(bytes[18..<50])
+            let statusBytes = Data(bytes[50..<(50 + statusLength)])
+            guard expires > 0, expires <= UInt64(UInt32.max) else {
+                throw RelayCryptoError(message: "invalid expiry")
+            }
+            let calculated = try validateStatusFields(
+                publicationID: publicationID,
+                expiresAt: UInt32(expires),
+                statusBytes: statusBytes
+            )
+            guard constantTimeEqual(digest, calculated) else {
+                throw RelayCryptoError(message: "status digest mismatch")
+            }
+            return RelayStatus(
+                publicationID: publicationID,
+                expiresAt: UInt32(expires),
+                statusBytes: statusBytes,
+                statusSHA256: digest
+            )
+        } catch {
+            throw RelayCryptoError.invalidStatusEnvelope
+        }
+    }
 }
 
 private extension InteractionRelayCrypto {
@@ -255,6 +492,23 @@ private extension InteractionRelayCrypto {
     }
 
     static func requestAAD(mailbox: String, requestID: String) throws -> Data {
+        try scopedAAD(mailbox: mailbox, requestID: requestID, suffix: "|request")
+    }
+
+    static func verdictAAD(mailbox: String, requestID: String) throws -> Data {
+        try scopedAAD(mailbox: mailbox, requestID: requestID, suffix: "|verdict")
+    }
+
+    static func statusAAD(mailbox: String) throws -> Data {
+        let mailboxBytes = try mailboxData(mailbox)
+        var aad = protocolPrefix
+        aad.append(UInt8(ascii: "|"))
+        aad.append(mailboxBytes)
+        aad.append(Data("|status".utf8))
+        return aad
+    }
+
+    static func scopedAAD(mailbox: String, requestID: String, suffix: String) throws -> Data {
         let mailboxBytes = try mailboxData(mailbox)
         _ = try requestIDBytes(requestID)
         var aad = protocolPrefix
@@ -265,8 +519,96 @@ private extension InteractionRelayCrypto {
             throw RelayCryptoError(message: "request id must encode 16 bytes")
         }
         aad.append(id)
-        aad.append(Data("|request".utf8))
+        aad.append(Data(suffix.utf8))
         return aad
+    }
+
+    static func verdictCode(_ verdict: String) throws -> UInt8 {
+        switch verdict {
+        case "approve": return 1
+        case "deny": return 2
+        case "terminal": return 3
+        case "panic": return 4
+        default: throw RelayCryptoError(message: "unsupported verdict")
+        }
+    }
+
+    static func verdictMACMessage(mailbox: String, request: RelayRequest, verdict: String) throws -> Data {
+        let calculated = try validateRequestFields(
+            requestID: request.requestID,
+            challenge: request.challenge,
+            expiresAt: request.expiresAt,
+            viewBytes: request.viewBytes
+        )
+        guard constantTimeEqual(calculated, request.viewSHA256) else {
+            throw RelayCryptoError(message: "invalid relay request digest")
+        }
+        let mailboxBytes = try mailboxData(mailbox)
+        let code = try verdictCode(verdict)
+        let requestID = try requestIDBytes(request.requestID)
+        var message = Data("vibepulse-ir-verdict-v1".utf8)
+        message.append(0)
+        message.append(UInt8((mailboxBytes.count >> 8) & 0xFF))
+        message.append(UInt8(mailboxBytes.count & 0xFF))
+        message.append(mailboxBytes)
+        message.append(requestID)
+        message.append(request.challenge)
+        message.append(request.viewSHA256)
+        message.append(code)
+        return message
+    }
+
+    static func validateStatusFields(publicationID: UInt64, expiresAt: UInt32, statusBytes: Data) throws -> Data {
+        guard publicationID > 0 else {
+            throw RelayCryptoError(message: "invalid publication id")
+        }
+        guard expiresAt > 0 else {
+            throw RelayCryptoError(message: "invalid expiry")
+        }
+        guard statusBytes.count > 0, statusBytes.count <= maxStatusBytes else {
+            throw RelayCryptoError(message: "invalid status size")
+        }
+        return Data(SHA256.hash(data: statusBytes))
+    }
+
+    static func statusFrame(
+        publicationID: UInt64,
+        expiresAt: UInt32,
+        statusBytes: Data,
+        digest: Data,
+        padding: (@Sendable (Int) -> Data)?
+    ) throws -> Data {
+        let paddingSize = statusFrameBytes - statusHeaderBytes - statusBytes.count
+        guard paddingSize >= 0 else { throw RelayCryptoError(message: "frame overflow") }
+        var frame = Data()
+        frame.reserveCapacity(statusFrameBytes)
+        frame.append(statusMagic)
+        appendBigEndian(publicationID, width: 8, to: &frame)
+        appendBigEndian(UInt64(expiresAt), width: 4, to: &frame)
+        appendBigEndian(UInt64(statusBytes.count), width: 2, to: &frame)
+        frame.append(digest)
+        frame.append(statusBytes)
+        frame.append(try paddingBytes(padding, count: paddingSize))
+        guard frame.count == statusFrameBytes else {
+            throw RelayCryptoError(message: "invalid status frame")
+        }
+        return frame
+    }
+
+    static func appendBigEndian(_ value: UInt64, width: Int, to data: inout Data) {
+        var shift = (width - 1) * 8
+        for _ in 0..<width {
+            data.append(UInt8((value >> shift) & 0xFF))
+            shift -= 8
+        }
+    }
+
+    static func readBigEndian(_ bytes: [UInt8], start: Int, width: Int) -> UInt64 {
+        var value: UInt64 = 0
+        for offset in 0..<width {
+            value = (value << 8) | UInt64(bytes[start + offset])
+        }
+        return value
     }
 
     static func validateRequestFields(

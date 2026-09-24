@@ -17,8 +17,10 @@ let package = Package(
         .target(name: "VibePulseServer", dependencies: ["VibePulseProviders", "VibePulseAgents", "VibePulseRelay"]),
         .executableTarget(name: "vibepulse-statusline", dependencies: ["VibePulseState"]),
         .target(name: "VibePulseBarCore"),
-        .executableTarget(name: "VibePulseBar", dependencies: ["VibePulseBarCore", "VibePulseServer"]),
-        .testTarget(name: "VibePulseBarCoreTests", dependencies: ["VibePulseBarCore"],
+        .executableTarget(name: "VibePulseBar", dependencies: [
+            "VibePulseBarCore", "VibePulseServer", "VibePulseRelay", "VibePulseProviders", "VibePulseState",
+        ], resources: [.copy("Resources")]),
+        .testTarget(name: "VibePulseBarCoreTests", dependencies: ["VibePulseBarCore", "VibePulseServer"],
                     resources: [.copy("Fixtures")]),
         .testTarget(name: "VibePulseEngineTests", dependencies: ["VibePulseServer", "VibePulseState"]),
     ]

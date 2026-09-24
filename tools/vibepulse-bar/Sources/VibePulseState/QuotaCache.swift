@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import VibePulseSupport
 
@@ -26,6 +27,8 @@ public final class QuotaCache: @unchecked Sendable {
     public let path: URL
     private let now: @Sendable () -> TimeInterval
     private let lock = NSLock()
+    /// Publishes the committed snapshot. `latest` takes only this lock, so a read does not wait out the writer fsync.
+    private let readLock = NSLock()
     private var records: [Key: CachedQuota] = [:]
     private var readRecords: [CachedQuota] = []
 
@@ -66,7 +69,9 @@ public final class QuotaCache: @unchecked Sendable {
             records = old
             return false
         }
+        readLock.lock()
         readRecords = snapshot
+        readLock.unlock()
         return true
     }
 
@@ -74,9 +79,9 @@ public final class QuotaCache: @unchecked Sendable {
         guard Self.providers.contains(provider), Self.scopes.contains(scope) else { return nil }
         let current = now ?? self.now()
         guard current.isFinite else { return nil }
-        lock.lock()
+        readLock.lock()
         let snapshot = readRecords
-        lock.unlock()
+        readLock.unlock()
         let candidates = snapshot.filter {
             $0.provider == provider && $0.scope == scope && Double($0.resetAt) > current
         }
@@ -158,6 +163,7 @@ public final class QuotaCache: @unchecked Sendable {
         }
         let payload = JSONValue.object([("v", .int(1)), ("records", .array(rows))])
         try StateFiles.atomicWrite(JSONWire.encode(payload), to: path)
+        chmod(path.path, 0o600)
     }
 
     private static func key(_ record: CachedQuota) -> Key {

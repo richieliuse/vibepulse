@@ -51,21 +51,17 @@ struct ServiceStatusView: View {
         switch self.service.phase {
         case .external:
             Callout(
-                text: self.service.foreign.map { "Started outside this app: \($0.command)" }
-                    ?? "Another process serves port \(self.service.port).",
+                text: self.service.foreign.map { "Port \(self.service.port) is in use by pid \($0.pid): \($0.command)" }
+                    ?? (self.service.lastError ?? "Port \(self.service.port) is already in use."),
                 buttonTitle: self.service.foreign?.looksLikeTokenServer == true ? "Take Over" : nil,
                 action: self.actions.takeOverExternal)
         case .launchAgent:
             Callout(
-                text: "launchd restarts this service by itself. Take over to start, pause and quit it from here; Settings can hand it back.",
+                text: "launchd restarts se.torget.tokenserver by itself. Take over to run the server in this app; Settings can hand it back.",
                 buttonTitle: "Take Over",
                 action: self.actions.takeOverLaunchAgent)
-        case .crashed:
-            if let exit = self.service.lastExit, !exit.lastLines.isEmpty {
-                LogExcerpt(lines: Array(exit.lastLines.suffix(3)))
-            }
-        case .misconfigured:
-            Callout(text: "Choose the Python and server script in Settings.",
+        case .failed:
+            Callout(text: self.service.lastError ?? "The server did not start.",
                     buttonTitle: "Settings…", action: self.actions.openSettings)
         default:
             if let error = self.service.lastError {
@@ -119,22 +115,3 @@ private struct PillButton: View {
     }
 }
 
-private struct LogExcerpt: View {
-    let lines: [String]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            ForEach(Array(self.lines.enumerated()), id: \.offset) { _, line in
-                Text(line)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-        }
-        .padding(8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
-        .padding(.top, 4)
-    }
-}

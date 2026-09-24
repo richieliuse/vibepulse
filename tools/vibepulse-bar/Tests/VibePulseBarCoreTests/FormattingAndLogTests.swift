@@ -49,23 +49,8 @@ final class FormattingAndLogTests: XCTestCase {
         XCTAssertEqual(log.tail(limit: 2), ["Traceback (most recent call last):", "OSError: boom"])
         XCTAssertTrue(log.tail().contains { $0.hasSuffix("INFO vibepulse-bar: started tokenserver pid 1") })
 
-        // In-place truncation (the server's own rotation) drops the mark.
+        // In-place truncation drops the mark.
         try Data("after rotation\n".utf8).write(to: URL(fileURLWithPath: path))
         XCTAssertEqual(log.serverTail(since: mark + 1000), ["after rotation"])
-    }
-
-    func testOwnershipRecordRoundTrip() throws {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("vpbar-own-\(UUID().uuidString)/service.json")
-        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let pid = ProcessInfo.processInfo.processIdentifier
-        let started = try XCTUnwrap(ProcessInspector.startTime(of: pid))
-        OwnershipRecord(pid: pid, startTime: started, port: 8737).save(to: url)
-        let loaded = try XCTUnwrap(OwnershipRecord.load(from: url))
-        XCTAssertTrue(loaded.isStillRunning)
-        XCTAssertFalse(OwnershipRecord(pid: pid, startTime: started - 60, port: 8737).isStillRunning,
-                       "a recycled pid with a different start time is not ours")
-        OwnershipRecord.clear(at: url)
-        XCTAssertNil(OwnershipRecord.load(from: url))
     }
 }

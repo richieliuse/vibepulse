@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import VibePulseBarCore
 
@@ -37,7 +38,8 @@ enum UsageDisplay: String, Codable, CaseIterable, Identifiable {
 }
 
 extension Provider {
-    /// Neutral symbols: the provider marks belong to their owners.
+    /// Neutral symbols kept for accessibility labels. The drawn mark is
+    /// `ProviderMark`, CodexBar's `ProviderIcon-<id>.svg`.
     var symbol: String {
         switch self {
         case .claude: "sparkle"
@@ -47,15 +49,37 @@ extension Provider {
         }
     }
 
-    /// The panel's locked accents for Claude and Codex; Grok and Cursor are
-    /// monochrome on the panel, so they follow the system label colour here.
+    /// Hardware accents for Claude and Codex. Grok and Cursor bars are a dark
+    /// green; their marks stay monochrome in the tab.
     var accent: Color {
         switch self {
         case .claude: Color(red: 0xD9 / 255, green: 0x77 / 255, blue: 0x57 / 255)
         case .codex: Color(red: 0x6F / 255, green: 0x78 / 255, blue: 0xFF / 255)
-        case .grok: Color.primary.opacity(0.75)
-        case .cursor: Color.primary.opacity(0.6)
+        case .grok, .cursor: Color(red: 0x1B / 255, green: 0x6B / 255, blue: 0x3A / 255)
         }
+    }
+}
+
+/// CodexBar's provider SVGs, drawn as template images so the tab tint applies.
+@MainActor
+enum ProviderMark {
+    static func image(for provider: Provider) -> NSImage {
+        let cached = cache[provider]
+        if let cached { return cached }
+        let loaded = load(provider) ?? NSImage(systemSymbolName: provider.symbol, accessibilityDescription: provider.displayName) ?? NSImage()
+        loaded.isTemplate = true
+        cache[provider] = loaded
+        return loaded
+    }
+
+    private static var cache: [Provider: NSImage] = [:]
+
+    private static func load(_ provider: Provider) -> NSImage? {
+        let name = "ProviderIcon-\(provider.rawValue)"
+        let url = Bundle.module.url(forResource: name, withExtension: "svg", subdirectory: "Resources")
+            ?? Bundle.module.url(forResource: name, withExtension: "svg")
+        guard let url, let image = NSImage(contentsOf: url), image.size.width > 0 else { return nil }
+        return image
     }
 }
 

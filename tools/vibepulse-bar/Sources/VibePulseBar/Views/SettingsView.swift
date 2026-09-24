@@ -41,19 +41,13 @@ private struct GeneralSettings: View {
                 if let loginError {
                     Text(loginError).font(.caption).foregroundStyle(.red)
                 }
-                Toggle("Start the tokenserver when the app opens",
+                Toggle("Start the server when the app opens",
                        isOn: self.$model.preferences.startServiceOnLaunch)
-                Toggle("Restart the tokenserver after a crash",
-                       isOn: self.$model.preferences.autoRestart)
-                Text("Crash restarts back off from 5 s to 60 s, like the LaunchAgent's 30 s throttle; a run that lasted two minutes resets the ladder.")
+                Text("The menu bar app is the server. It does not launch a Python child.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Section("Display") {
-                Picker("Show quota as", selection: self.$model.preferences.usageDisplay) {
-                    ForEach(UsageDisplay.allCases) { Text($0.label).tag($0) }
-                }
-                .pickerStyle(.segmented)
                 Picker("Menu bar icon follows", selection: self.$model.preferences.iconProvider) {
                     Text("Most used provider").tag(Provider?.none)
                     ForEach(Provider.allCases) { Text($0.displayName).tag(Provider?.some($0)) }
@@ -67,8 +61,7 @@ private struct GeneralSettings: View {
 
 private struct ServiceSettings: View {
     @Bindable var model: AppModel
-    @State private var draft = ServiceConfiguration(pythonPath: "", scriptPath: "")
-    @State private var argumentsText = ""
+    @State private var draft = ServiceConfiguration()
     @State private var portText = ""
     @State private var message: String?
 
@@ -76,7 +69,7 @@ private struct ServiceSettings: View {
         Form {
             Section {
                 LabeledContent("Status") {
-                    let service = self.model.supervisor.snapshot
+                    let service = self.model.session.serviceSnapshot
                     HStack(spacing: 6) {
                         StatusDot(color: service.tone.color)
                         Text("\(service.headline) — \(service.detail(now: Date()))")
@@ -86,27 +79,36 @@ private struct ServiceSettings: View {
                 }
                 LabeledContent("Configuration", value: self.model.configurationSource.rawValue)
             }
-            Section("Launch command") {
-                PathField(title: "Python", path: self.$draft.pythonPath, chooseDirectories: false)
-                PathField(title: "Server script", path: self.$draft.scriptPath, chooseDirectories: false)
-                PathField(title: "Working directory", path: self.workingDirectory, chooseDirectories: true)
+            Section("Server") {
                 TextField("Port", text: self.$portText)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Extra arguments, one per line")
-                    TextEditor(text: self.$argumentsText)
-                        .font(.system(size: 12, design: .monospaced))
-                        .frame(height: 64)
-                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
-                }
                 PathField(title: "Log file", path: self.$draft.logPath, chooseDirectories: false)
                 ForEach(self.issues, id: \.message) { issue in
                     Label(issue.message, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                         .font(.caption)
                 }
+            }
+            Section("Plans") {
+                TextField("Claude plan", text: self.$draft.claudePlan)
+                TextField("Codex plan", text: self.$draft.codexPlan)
+                Text("Plan names such as pro, max5x, or max20x. Blank leaves that plan unset.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Relay") {
+                TextField("Relay origin", text: self.$draft.relayURL)
+                TextField("Mailbox", text: self.$draft.relayMailbox)
+                Toggle("Publish interactions", isOn: self.$draft.publishInteractions)
+                Toggle("Publish agent status", isOn: self.$draft.publishAgentStatus)
+                Text("An https origin and mailbox. The device key and Mac token stay in their existing files.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("GitHub") {
+                TextField("Repository", text: self.$draft.githubRepo, prompt: Text("owner/name"))
+            }
+            Section {
                 HStack {
-                    Button("Import from LaunchAgent") { self.importLaunchAgent() }
-                    Button("Use This Checkout") { self.useCheckout() }
                     Spacer()
                     Button("Apply") { self.apply(restart: false) }
                     Button("Apply and Restart") { self.apply(restart: true) }
@@ -124,18 +126,8 @@ private struct ServiceSettings: View {
         .onAppear(perform: self.load)
     }
 
-    private var workingDirectory: Binding<String> {
-        Binding(
-            get: { self.draft.workingDirectory ?? "" },
-            set: { self.draft.workingDirectory = $0.isEmpty ? nil : $0 })
-    }
-
     private var edited: ServiceConfiguration {
         var configuration = self.draft
-        configuration.arguments = self.argumentsText
-            .split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
         configuration.port = Int(self.portText.trimmingCharacters(in: .whitespaces))
             ?? ServiceConfiguration.defaultPort
         return configuration
@@ -145,7 +137,6 @@ private struct ServiceSettings: View {
 
     private func load() {
         self.draft = self.model.configuration
-        self.argumentsText = self.draft.arguments.joined(separator: "\n")
         self.portText = String(self.draft.port)
     }
 
@@ -155,26 +146,7 @@ private struct ServiceSettings: View {
         self.message = "Saved."
         if restart {
             self.model.restartService()
-            self.message = "Saved; restarting the service."
-        }
-    }
-
-    private func importLaunchAgent() {
-        do {
-            try self.model.importLaunchAgent()
-            self.load()
-            self.message = "Imported \(ServiceConfiguration.launchAgentPath)."
-        } catch {
-            self.message = error.localizedDescription
-        }
-    }
-
-    private func useCheckout() {
-        if self.model.resetToRepositoryDefault() {
-            self.load()
-            self.message = "Using the checkout this app was built from."
-        } else {
-            self.message = "This app was not built inside a VibePulse checkout."
+            self.message = "Saved; restarting the server."
         }
     }
 }
@@ -183,8 +155,8 @@ private struct LaunchAgentSection: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        let agent = self.model.supervisor.launchAgent
-        let service = self.model.supervisor.snapshot
+        let agent = self.model.session.launchAgent
+        let service = self.model.session.serviceSnapshot
         VStack(alignment: .leading, spacing: 6) {
             Text(self.summary(agent))
                 .foregroundStyle(.secondary)
@@ -202,7 +174,7 @@ private struct LaunchAgentSection: View {
 
     private func summary(_ agent: LaunchAgentStatus) -> String {
         guard agent.plistExists else {
-            return "No LaunchAgent is installed. VibePulse Bar is the only supervisor; enable “Launch at login” to start it with your session."
+            return "No LaunchAgent is installed. This app is the server; enable “Launch at login” to start it with your session."
         }
         if agent.loaded {
             return "se.torget.tokenserver is loaded: launchd owns the service and restarts it by itself."
@@ -247,7 +219,7 @@ private struct AboutSettings: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("VibePulse Bar").font(.title2.weight(.semibold))
             Text("Version \(AppInfo.version)").foregroundStyle(.secondary)
-            Text("A menu bar home for the VibePulse tokenserver: start, pause and quit it from here, see who is serving the port, and read every agent's quota at a glance. The numbers come from the same service the panel polls; nothing is invented, and missing data stays a dash.")
+            Text("A menu bar home for the VibePulse server: this app binds the port, and the menu reads that server's snapshot. Nothing is invented, and missing data stays a dash.")
                 .fixedSize(horizontal: false, vertical: true)
             Link("github.com/niclasvestlund-YT/vibepulse",
                  destination: URL(string: "https://github.com/niclasvestlund-YT/vibepulse")!)

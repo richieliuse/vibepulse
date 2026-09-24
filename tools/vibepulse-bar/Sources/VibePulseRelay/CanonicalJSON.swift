@@ -20,8 +20,18 @@ public enum CanonicalJSON {
     }
 
     public static func encode(_ value: Value) throws -> Data {
+        try render(value, compact: true)
+    }
+
+    /// `json.dumps(sort_keys=True)` separators (`", "` / `": "`), still `ensure_ascii`.
+    /// The numbers publisher uses this. Byte parity with CPython matters only for ASCII values.
+    public static func encodePublisher(_ value: Value) throws -> Data {
+        try render(value, compact: false)
+    }
+
+    private static func render(_ value: Value, compact: Bool) throws -> Data {
         var text = ""
-        try write(value, into: &text, depth: 0)
+        try write(value, into: &text, depth: 0, compact: compact)
         return Data(text.utf8)
     }
 
@@ -40,8 +50,10 @@ public enum CanonicalJSON {
 
 private let maxDepth = 64
 
-private func write(_ value: CanonicalJSON.Value, into text: inout String, depth: Int) throws {
+private func write(_ value: CanonicalJSON.Value, into text: inout String, depth: Int, compact: Bool) throws {
     if depth > maxDepth { throw CanonicalJSON.Failure.invalid }
+    let comma = compact ? "," : ", "
+    let colon = compact ? ":" : ": "
     switch value {
     case .null:
         text += "null"
@@ -57,8 +69,8 @@ private func write(_ value: CanonicalJSON.Value, into text: inout String, depth:
     case let .array(items):
         text += "["
         for (index, item) in items.enumerated() {
-            if index > 0 { text += "," }
-            try write(item, into: &text, depth: depth + 1)
+            if index > 0 { text += comma }
+            try write(item, into: &text, depth: depth + 1, compact: compact)
         }
         text += "]"
     case let .object(fields):
@@ -67,10 +79,10 @@ private func write(_ value: CanonicalJSON.Value, into text: inout String, depth:
             lhs.unicodeScalars.lexicographicallyPrecedes(rhs.unicodeScalars)
         }
         for (index, key) in keys.enumerated() {
-            if index > 0 { text += "," }
+            if index > 0 { text += comma }
             text += escaped(key)
-            text += ":"
-            try write(fields[key]!, into: &text, depth: depth + 1)
+            text += colon
+            try write(fields[key]!, into: &text, depth: depth + 1, compact: compact)
         }
         text += "}"
     }

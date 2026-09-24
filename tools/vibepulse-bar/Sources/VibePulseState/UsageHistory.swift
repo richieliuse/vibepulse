@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import VibePulseSupport
 
@@ -34,6 +35,39 @@ public struct Forecast: Equatable, Sendable {
     }
 }
 
+/// One OBS-39 row: a live quota percentage below the cached figure for the same reset.
+/// Missing evidence is an empty list. Fields are measurements, never a stand-in zero.
+public struct QuotaRegression: Equatable, Sendable {
+    public var provider: String
+    public var scope: String
+    public var livePct: Double
+    public var cachedPct: Double
+    public var resetAt: Int
+    public var at: Int
+
+    public static let jsonKeys = ["provider", "scope", "livePct", "cachedPct", "resetAt", "at"]
+
+    public init(provider: String, scope: String, livePct: Double, cachedPct: Double, resetAt: Int, at: Int) {
+        self.provider = provider
+        self.scope = scope
+        self.livePct = livePct
+        self.cachedPct = cachedPct
+        self.resetAt = resetAt
+        self.at = at
+    }
+
+    public var jsonObject: StrictJSON.Value {
+        .object([
+            "provider": .string(provider),
+            "scope": .string(scope),
+            "livePct": .double(livePct),
+            "cachedPct": .double(cachedPct),
+            "resetAt": .int(resetAt),
+            "at": .int(at),
+        ])
+    }
+}
+
 public final class UsageHistory: @unchecked Sendable {
     public static let sampleInterval: TimeInterval = 900
     public static let retention: TimeInterval = 691_200
@@ -50,6 +84,11 @@ public final class UsageHistory: @unchecked Sendable {
 
     private static let providers: Set<String> = ["claude", "codex"]
     private static let windows: Set<String> = ["session", "week", "model_week"]
+    private static let scopeForWindow: [String: String] = [
+        "session": "general_session",
+        "week": "general_weekly",
+        "model_week": "model_weekly",
+    ]
     private static let windowLength: [String: Double] = [
         "session": 18_000, "week": 604_800, "model_week": 604_800,
     ]
@@ -152,7 +191,7 @@ public final class UsageHistory: @unchecked Sendable {
         if projected >= 100 {
             let exhaustsAt = PyRound.integer(latest.at + (100 - latest.pct) / slope)
             return Forecast(state: "exhausts", exhaustsAt: exhaustsAt,
-                            offsetMinutes: PyRound.integer(Double(exhaustsAt) - resetAt) / 60)
+                            offsetMinutes: PyRound.integer((Double(exhaustsAt) - resetAt) / 60))
         }
         let pace = gain > 0 ? (100 - latest.pct) / gain : nil
         let clamped = min(100, max(0, PyRound.integer(projected)))
@@ -186,9 +225,68 @@ public final class UsageHistory: @unchecked Sendable {
         return delta < 0 ? nil : PyRound.places(delta, 1)
     }
 
+    /// Unexpired OBS-39 evidence for `quotaRegressions`, sorted by `at`.
+    /// The first time a later sample in a reset bucket is below an earlier one is the record.
+    /// No such pair — including an empty history — is `[]`.
+    public func quotaRegressions(now: Double? = nil) -> [QuotaRegression] {
+        let current = now ?? self.now()
+        guard current.isFinite else { return [] }
+        lock.lock()
+        let snapshot = samples
+        lock.unlock()
+        guard !snapshot.isEmpty else { return [] }
+
+        var groups: [String: [UsageSample]] = [:]
+        for sample in snapshot {
+            guard sample.at <= current, sample.reset > current,
+                  sample.at.isFinite, sample.pct.isFinite, sample.reset.isFinite,
+                  let scope = Self.scopeForWindow[sample.window] else { continue }
+            let key = "\(sample.provider)\u{0}\(scope)\u{0}\(sample.reset)"
+            groups[key, default: []].append(sample)
+        }
+
+        var found: [QuotaRegression] = []
+        for rows in groups.values {
+            let ordered = rows.sorted { $0.at < $1.at }
+            guard ordered.count >= 2,
+                  let scope = Self.scopeForWindow[ordered[0].window],
+                  let resetAt = Self.epoch(ordered[0].reset) else { continue }
+            var previous = ordered[0]
+            for sample in ordered.dropFirst() {
+                if sample.pct < previous.pct {
+                    guard let at = Self.epoch(sample.at) else { break }
+                    found.append(QuotaRegression(
+                        provider: sample.provider,
+                        scope: scope,
+                        livePct: PyRound.places(sample.pct, 1),
+                        cachedPct: PyRound.places(previous.pct, 1),
+                        resetAt: resetAt,
+                        at: at
+                    ))
+                    break
+                }
+                previous = sample
+            }
+        }
+        return found.sorted { lhs, rhs in
+            if lhs.at != rhs.at { return lhs.at < rhs.at }
+            if lhs.provider != rhs.provider { return lhs.provider < rhs.provider }
+            if lhs.scope != rhs.scope { return lhs.scope < rhs.scope }
+            return lhs.resetAt < rhs.resetAt
+        }
+    }
+
     static func resetCycle(_ resetAt: Double) -> Double {
         let quantum = resetQuantum
         return floor((resetAt + quantum / 2) / quantum) * quantum
+    }
+
+    /// Whole epoch seconds. A non-integer is absent, not zero.
+    private static func epoch(_ value: Double) -> Int? {
+        guard value.isFinite, value >= 0, value < Double(Int.max) else { return nil }
+        let truncated = value.rounded(.towardZero)
+        guard truncated == value else { return nil }
+        return Int(truncated)
     }
 
     private func load() -> [UsageSample] {
@@ -241,5 +339,6 @@ public final class UsageHistory: @unchecked Sendable {
             ])
         }
         try StateFiles.atomicWrite(JSONWire.encode(.object([("v", .int(1)), ("samples", .array(rows))])), to: path)
+        chmod(path.path, 0o600)
     }
 }

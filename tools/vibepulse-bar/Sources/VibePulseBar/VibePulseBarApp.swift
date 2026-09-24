@@ -25,30 +25,13 @@ struct VibePulseBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra {
-            MenuBarRoot(model: self.appDelegate.model)
-        } label: {
-            StatusItemLabel(model: self.appDelegate.model)
-        }
-        .menuBarExtraStyle(.window)
-
         Settings {
             SettingsView(model: self.appDelegate.model)
         }
     }
 }
 
-private struct StatusItemLabel: View {
-    let model: AppModel
-
-    var body: some View {
-        let state = StatusIconState.make(from: self.model.snapshot(),
-                                         iconProvider: self.model.preferences.iconProvider)
-        Image(nsImage: StatusIconRenderer.image(for: state))
-    }
-}
-
-private struct MenuBarRoot: View {
+struct MenuBarRoot: View {
     let model: AppModel
     @Environment(\.openSettings) private var openSettings
 
@@ -74,8 +57,13 @@ private struct MenuBarRoot: View {
                 model.openDiagnostics()
             },
             openSettings: {
+                // An accessory policy cannot present the Settings scene. Promote
+                // first, then send the scene action. Tab clicks must not reach
+                // this: those rows no longer carry `.keyboardShortcut`.
                 MenuWindow.dismiss()
-                NSApp.activate()
+                NSApp.setActivationPolicy(.regular)
+                NSApp.activate(ignoringOtherApps: true)
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
                 openSettings()
             },
             about: {
@@ -89,12 +77,8 @@ private struct MenuBarRoot: View {
 
 @MainActor
 enum MenuWindow {
-    /// `MenuBarExtra` has no dismiss API; closing its panel is the supported
-    /// way to hand focus to the window an action opens.
     static func dismiss() {
-        for window in NSApp.windows where String(describing: type(of: window)).contains("MenuBarExtra") {
-            window.close()
-        }
+        MenuStatusController.shared?.hide()
     }
 }
 
@@ -106,16 +90,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var signalSources: [DispatchSourceSignal] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // One supervisor per session: a second copy would count the first
-        // one's server as foreign and offer to take it over.
+        // One engine per session: a second copy would see this process's port as busy.
         if let running = Self.otherInstance() {
             running.activate()
             self.shutdownFinished = true
             NSApp.terminate(nil)
             return
         }
+        NSApp.setActivationPolicy(.accessory)
         self.installSignalHandlers()
         self.model.bootstrap()
+        MenuStatusController.install(model: self.model)
     }
 
     private static func otherInstance() -> NSRunningApplication? {
@@ -125,8 +110,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .first { $0.processIdentifier != me && !$0.isTerminated }
     }
 
-    /// Quit waits for the owned tokenserver to finish its SIGINT cleanup, so
-    /// the Max Tracker flush and relay stop still run.
+    /// Quit waits for the in-process engine to stop, so the Max Tracker flush
+    /// and relay stop still run. There is no child process to reap.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if self.shutdownFinished { return .terminateNow }
         guard !self.shutdownStarted else { return .terminateLater }

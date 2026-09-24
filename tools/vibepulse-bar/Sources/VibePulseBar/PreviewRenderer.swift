@@ -36,37 +36,34 @@ enum PreviewRenderer {
         let diagnostics = ServerDiagnostics(data: try self.healthyClaude(load("diagnostics.json")))
         let running = ServiceSnapshot(
             phase: .running, pid: 48213, processStartedAt: now.addingTimeInterval(-3 * 3600 - 17 * 60),
-            diagnostics: diagnostics, lastHealthyAt: now, ownsProcess: true, wantsRunning: true, isServing: true)
+            diagnostics: diagnostics, ownsProcess: true, wantsRunning: true, isServing: true)
         let live = DashboardSnapshot(
             service: running, tokens: tokens, tokensFetchedAt: now.addingTimeInterval(-8), tokensStale: false,
             agents: agents, agentsFetchedAt: now.addingTimeInterval(-1), usageDisplay: .used)
 
         var paused = live
-        paused.service = ServiceSnapshot(
-            phase: .idle,
-            lastExit: .init(pid: 48213, status: 0, bySignal: false, at: now.addingTimeInterval(-340),
-                            runtime: 11_000, expected: true, lastLines: []))
+        paused.service = ServiceSnapshot(phase: .idle)
         paused.tokensFetchedAt = now.addingTimeInterval(-345)
         paused.tokensStale = true
         paused.agents = nil
 
         var crashed = paused
         crashed.service = ServiceSnapshot(
-            phase: .crashed,
-            lastExit: .init(pid: 48213, status: 1, bySignal: false, at: now.addingTimeInterval(-4),
-                            runtime: 2.1, expected: false, lastLines: [
-                                "  File \"tokenserver.py\", line 5120, in main",
-                                "OSError: [Errno 48] Address already in use",
-                            ]),
-            nextRestartAt: now.addingTimeInterval(6), restartAttempt: 2, wantsRunning: true)
+            phase: .failed,
+            lastError: "The server did not start.",
+            wantsRunning: true)
+        crashed.tokens = nil
+        crashed.agents = nil
 
         var external = live
         external.service = ServiceSnapshot(
-            phase: .external, diagnostics: diagnostics,
+            phase: .external,
             foreign: ProcessDescription(
-                pid: 36670, command: "/Users/me/vibepulse/.venv/bin/python -u tools/tokenserver/tokenserver.py",
+                pid: 4242, command: "tokenserver",
                 startTime: nil),
-            isServing: true)
+            isServing: false)
+        external.tokens = nil
+        external.agents = nil
 
         var remaining = live
         remaining.usageDisplay = .remaining

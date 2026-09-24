@@ -24,7 +24,7 @@ struct ProviderSwitcher: View {
         guard case let .provider(provider) = tab,
               let used = self.snapshot.usage(provider).primary?.usedPercent
         else { return nil }
-        return ((100 - used) / 100, provider.accent)
+        return ((100 - used) / 100, Color.primary)
     }
 
     private func badge(for tab: MenuTab) -> Color? {
@@ -51,8 +51,7 @@ private struct SwitcherSegment: View {
     var body: some View {
         Button(action: self.action) {
             VStack(spacing: 3) {
-                Image(systemName: self.tab.symbol)
-                    .font(.system(size: 13, weight: .medium))
+                self.mark
                     .frame(height: 16)
                     .overlay(alignment: .topTrailing) {
                         if let badge {
@@ -84,22 +83,38 @@ private struct SwitcherSegment: View {
     }
 
     private var background: Color {
-        if self.isSelected { return .accentColor }
+        if self.isSelected { return Color.accentColor }
         return self.isHovered ? Color.primary.opacity(0.07) : .clear
     }
 
-    @ViewBuilder private var indicatorBar: some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .leading) {
-                Capsule().fill(Color.primary.opacity(self.indicator == nil ? 0 : 0.12))
+    @ViewBuilder private var mark: some View {
+        switch self.tab {
+        case .overview:
+            Image(systemName: "square.grid.2x2")
+                .font(.system(size: 13, weight: .medium))
+        case let .provider(provider):
+            Image(nsImage: ProviderMark.image(for: provider))
+                .resizable()
+                .scaledToFit()
+                .frame(width: 16, height: 16)
+        }
+    }
+
+    /// A fraction bar that cannot grow. `GeometryReader` accepts the menu's
+    /// unbounded height proposal on the selection update and pushes the rows
+    /// below the tab out of the panel.
+    private var indicatorBar: some View {
+        Capsule()
+            .fill(Color.primary.opacity(self.indicator == nil ? 0 : 0.12))
+            .frame(height: 2)
+            .overlay(alignment: .leading) {
                 if let indicator {
                     Capsule()
                         .fill(self.isSelected ? Color.white : indicator.color)
-                        .frame(width: max(0, proxy.size.width * indicator.fraction))
+                        .scaleEffect(x: max(0, min(1, indicator.fraction)), y: 1, anchor: .leading)
                 }
             }
-        }
-        .frame(height: 2)
-        .padding(.horizontal, 8)
+            .padding(.horizontal, 8)
+            .frame(height: 2)
     }
 }

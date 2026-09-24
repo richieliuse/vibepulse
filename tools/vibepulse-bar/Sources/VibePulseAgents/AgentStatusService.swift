@@ -145,9 +145,44 @@ public final class AgentStatusStore: @unchecked Sendable {
 }
 
 public final class AgentStatusService: @unchecked Sendable {
+    private let now: @Sendable () -> TimeInterval
+    private let wall: @Sendable () -> TimeInterval
+    private let projectsDirectory: URL?
+    private let codexSessions: URL?
     private let store: AgentStatusStore
+    private let tailer = JsonlTailer()
+    private let pollLock = NSLock()
+    private let pollGate = NSCondition()
+    private var pollStopped = false
+    private var pollLoopCount = 0
+    private var activeClaude: [URL] = []
+    private var activeCodex: [URL] = []
+    private var backfills: [String: ReplayObservation] = [:]
+    private var observationSequence = 0
+    private var nextDiscoveryAt = -Double.infinity
+
+    private struct ReplayObservation {
+        var event: AgentEvent
+        var observedAt: TimeInterval
+        var orderAt: TimeInterval
+        var sequence: Int
+    }
 
     public init(now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+        self.now = now
+        self.wall = { Date().timeIntervalSince1970 }
+        self.projectsDirectory = nil
+        self.codexSessions = nil
+        self.store = AgentStatusStore(now: now)
+    }
+
+    public init(projectsDirectory: URL, codexSessions: URL,
+                now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+                wall: @escaping @Sendable () -> TimeInterval = { Date().timeIntervalSince1970 }) {
+        self.now = now
+        self.wall = wall
+        self.projectsDirectory = projectsDirectory
+        self.codexSessions = codexSessions
         self.store = AgentStatusStore(now: now)
     }
 
@@ -165,9 +200,226 @@ public final class AgentStatusService: @unchecked Sendable {
         return try store.apply(provider: provider, event: event)
     }
 
+    /// Calls `pollOnce` until `stop()`. The server starts this on a worker it owns.
+    /// The wait between passes is interrupted by `stop()`. This method does not
+    /// create a thread.
+    public func pollOnceLoop(interval: TimeInterval = 0.5) {
+        pollGate.lock()
+        if pollStopped {
+            pollGate.unlock()
+            return
+        }
+        pollLoopCount += 1
+        pollGate.unlock()
+        defer {
+            pollGate.lock()
+            pollLoopCount -= 1
+            pollGate.broadcast()
+            pollGate.unlock()
+        }
+        while !pollLoopShouldStop() {
+            _ = pollOnce()
+            if !pausePollLoop(interval) { return }
+        }
+    }
+
+    /// Idempotent. Every `pollOnceLoop` the server started returns, including
+    /// one that is waiting between passes. A second call waits for nothing.
+    public func stop() {
+        pollGate.lock()
+        pollStopped = true
+        pollGate.broadcast()
+        while pollLoopCount > 0 {
+            pollGate.wait()
+        }
+        pollGate.unlock()
+    }
+
+    /// Tail the discovered logs once. Startup history is applied from each
+    /// record's own timestamp, on both the order clock and the age clock.
+    public func pollOnce() -> Int {
+        guard let projectsDirectory, let codexSessions else { return 0 }
+        pollLock.lock()
+        defer { pollLock.unlock() }
+        if now() >= nextDiscoveryAt {
+            activeClaude = discoverJSONL(in: projectsDirectory, rolloutOnly: false)
+            activeCodex = discoverJSONL(in: codexSessions, rolloutOnly: true)
+            nextDiscoveryAt = now() + 5
+        }
+        var changed = 0
+        for url in activeClaude {
+            changed += ingest(url, provider: "claude", classify: classifyClaude)
+        }
+        for url in activeCodex {
+            changed += ingest(url, provider: "codex", classify: classifyCodex)
+        }
+        return changed
+    }
+
     public func snapshot() -> WireObject {
         store.snapshot()
     }
+
+    private func pollLoopShouldStop() -> Bool {
+        pollGate.lock()
+        defer { pollGate.unlock() }
+        return pollStopped
+    }
+
+    /// True when the loop should poll again. False after `stop()`.
+    private func pausePollLoop(_ interval: TimeInterval) -> Bool {
+        pollGate.lock()
+        defer { pollGate.unlock() }
+        if pollStopped { return false }
+        let pause = interval.isFinite && interval > 0 ? interval : 0
+        let deadline = Date().addingTimeInterval(pause)
+        while !pollStopped && Date() < deadline {
+            if !pollGate.wait(until: deadline) { break }
+        }
+        return !pollStopped
+    }
+
+    private func ingest(_ url: URL, provider: String, classify: (Any?) -> AgentEvent?) -> Int {
+        let key = storageKey(url)
+        let hadState = tailer.contains(url)
+        let read = tailer.read(url)
+        let isBackfill = !hadState || backfills[key] != nil
+        let fileTime = fileModificationTime(url)
+        let monotonic = now()
+        let wallNow = wall()
+        var changed = 0
+        if isBackfill {
+            for record in read.records {
+                guard let event = classify(record) else { continue }
+                observationSequence += 1
+                let orderAt = resolvedEventWallTime(of: record, fileMTime: fileTime, wallNow: wallNow)
+                let observedAt = replayObservedAt(monotonicNow: monotonic, wallNow: wallNow, orderAt: orderAt)
+                let observation = ReplayObservation(
+                    event: event, observedAt: observedAt, orderAt: orderAt, sequence: observationSequence)
+                if let current = backfills[key] {
+                    if (observation.orderAt, observation.sequence) >= (current.orderAt, current.sequence) {
+                        backfills[key] = observation
+                    }
+                } else {
+                    backfills[key] = observation
+                }
+            }
+            if read.caughtUp, let observation = backfills.removeValue(forKey: key) {
+                if apply(observation, provider: provider, refreshUnchanged: false) { changed += 1 }
+            }
+        } else {
+            for record in read.records {
+                guard let event = classify(record) else { continue }
+                observationSequence += 1
+                let orderAt = resolvedEventWallTime(of: record, fileMTime: fileTime, wallNow: wallNow)
+                let observedAt = replayObservedAt(monotonicNow: monotonic, wallNow: wallNow, orderAt: orderAt)
+                let observation = ReplayObservation(
+                    event: event, observedAt: observedAt, orderAt: orderAt, sequence: observationSequence)
+                if apply(observation, provider: provider, refreshUnchanged: true) { changed += 1 }
+            }
+        }
+        return changed
+    }
+
+    private func apply(_ observation: ReplayObservation, provider: String, refreshUnchanged: Bool) -> Bool {
+        (try? store.apply(
+            provider: provider, event: observation.event, observedAt: observation.observedAt,
+            orderAt: observation.orderAt, refreshUnchanged: refreshUnchanged)) ?? false
+    }
+}
+
+func eventWallTime(of record: Any?) -> TimeInterval? {
+    guard let record = record as? [String: Any] else { return nil }
+    var candidates: [Any?] = [record["timestamp"]]
+    if let payload = record["payload"] as? [String: Any] {
+        if payload["type"] as? String == "task_complete" {
+            candidates.append(payload["completed_at"])
+            candidates.append(payload["started_at"])
+        } else {
+            candidates.append(payload["started_at"])
+            candidates.append(payload["completed_at"])
+        }
+    }
+    for candidate in candidates {
+        guard let text = candidate as? String, !text.isEmpty,
+              let stamp = parseISO8601Timestamp(text) else { continue }
+        return stamp
+    }
+    return nil
+}
+
+func resolvedEventWallTime(of record: Any?, fileMTime: TimeInterval?, wallNow: TimeInterval) -> TimeInterval {
+    var event = eventWallTime(of: record)
+    if event == nil || event! > wallNow {
+        event = fileMTime
+    }
+    guard let event, event.isFinite, event <= wallNow else { return wallNow }
+    return event
+}
+
+func replayObservedAt(monotonicNow: TimeInterval, wallNow: TimeInterval, orderAt: TimeInterval) -> TimeInterval {
+    monotonicNow - max(0, wallNow - orderAt)
+}
+
+private func parseISO8601Timestamp(_ text: String, allowNaive: Bool = true) -> TimeInterval? {
+    let formatter = ISO8601DateFormatter()
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    let attempts: [ISO8601DateFormatter.Options] = text.contains(".")
+        ? [[.withInternetDateTime, .withFractionalSeconds], [.withInternetDateTime]]
+        : [[.withInternetDateTime], [.withInternetDateTime, .withFractionalSeconds]]
+    for options in attempts {
+        formatter.formatOptions = options
+        if let date = formatter.date(from: text) {
+            let stamp = date.timeIntervalSince1970
+            if stamp.isFinite { return stamp }
+        }
+    }
+    if allowNaive, !text.hasSuffix("Z"), text.range(of: #"[+-]\d{2}:\d{2}$"#, options: .regularExpression) == nil {
+        return parseISO8601Timestamp(text + "Z", allowNaive: false)
+    }
+    return nil
+}
+
+private func fileModificationTime(_ url: URL) -> TimeInterval? {
+    guard let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate else {
+        return nil
+    }
+    let stamp = date.timeIntervalSince1970
+    return stamp.isFinite ? stamp : nil
+}
+
+private func discoverJSONL(in root: URL, rolloutOnly: Bool) -> [URL] {
+    var isDirectory = ObjCBool(false)
+    guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+        return []
+    }
+    guard let enumerator = FileManager.default.enumerator(
+        at: root, includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey]) else {
+        return []
+    }
+    struct Candidate {
+        var mtime: TimeInterval
+        var path: String
+        var url: URL
+    }
+    var candidates: [Candidate] = []
+    for case let url as URL in enumerator {
+        let name = url.lastPathComponent
+        if rolloutOnly {
+            guard name.hasPrefix("rollout-"), name.hasSuffix(".jsonl") else { continue }
+        } else {
+            guard name.hasSuffix(".jsonl") else { continue }
+        }
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey]),
+              values.isRegularFile == true else { continue }
+        let mtime = values.contentModificationDate?.timeIntervalSince1970 ?? 0
+        candidates.append(Candidate(mtime: mtime, path: url.path, url: url))
+    }
+    candidates.sort { lhs, rhs in
+        if lhs.mtime != rhs.mtime { return lhs.mtime < rhs.mtime }
+        return lhs.path < rhs.path
+    }
+    return candidates.suffix(12).map(\.url)
 }
 
 private func finite(_ value: TimeInterval, fallback: TimeInterval) -> TimeInterval {
